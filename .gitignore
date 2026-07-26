@@ -4,3 +4,6 @@ results/
 *.pt
 *.npz
 .ipynb_checkpoints/
+
+*.egg-info/
+build/
