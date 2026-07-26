@@ -264,3 +264,87 @@ error, and **the finding is unaffected**: the worst gas error is still about 2% 
 its IEC 60599 attention level, so none of the huge percentages describes a
 diagnostically meaningful error, and the genuinely large error is still thermal.
 `PHASE1_VERIFICATION.md` reports the measured column. Quote that one.
+
+---
+
+## Phase 2 — fixes
+
+Gate 1 numbers before and after each fix are in `PHASE2_EFFECTS.md`.
+
+**Design decision applying to all five fixes.** Each fix flips a DEFAULT to the
+corrected behaviour and keeps the v57 behaviour reachable by explicit argument.
+`scripts/verify_phase1.py` and the `audit_port/` check scripts now request v57
+explicitly, so the Phase 1 reproduction survives as a regression test while the
+package's defaults are the fixed physics. The alternative — deleting the v57 path —
+would have made the gate numbers unreproducible the moment the first fix landed,
+and there would then be nothing to measure each fix against.
+
+### J-18 Fix 1 needed a differentiable fixed-point solver
+
+`true_fixed_point` uses brentq: scalar, slow, not differentiable. It cannot go
+inside a forward pass that evaluates theta_ss on (B, n_sensors) tensors.
+
+`true_fixed_point_torch` / `true_fixed_point_np` solve the same equation by
+contraction iteration:
+
+    theta <- theta_a + DTheta_oil_R * ((1 + K^2 R_eff(theta)) / (1 + R))^n_exp
+
+The measured contraction factor is about 0.34 per step, not the ~0.05 I first
+estimated, so the iteration count is 20 rather than 12. Validated against brentq
+over a 2009-point (K, theta_a) grid covering K in [0.30, 1.50] and theta_a in
+[10, 50]:
+
+| version | max error vs brentq |
+|---|---|
+| numpy, float64, 20 iters | 1.33e-08 degC |
+| torch, float64, 20 iters | 1.33e-08 degC |
+| torch, float32, 20 iters | 3.16e-05 degC (the float32 floor) |
+
+3e-5 degC is five orders of magnitude below the -18.25 degC error at K = 1.3,
+theta_a = 30 that the fix exists to remove. Gradients through it are finite and
+nonzero. Script: `audit_port/scripts/06_check_fix1.py`.
+
+### J-19 Fix 1 also reaches the trunk features, not just the baseline
+
+The brief names four sites: IC generation, the model's analytical baseline, the
+rollout, and plotting. A fifth site computes theta_ss and was not named:
+`build_trunk_feats` builds the `driving`, `dm_n` and `dr_n` input features from
+formula C.
+
+I included it, because leaving it would have meant the model's baseline used the
+true fixed point while its own input features described a different attractor —
+replacing one inconsistency with another, which is the opposite of what fix 1 is
+for. `build_trunk_feats` takes a `theta_ss_mode` argument defaulting to
+`formula_C`, and `CODOperator` passes its own mode through.
+
+The monolithic baselines stay on formula C. They have no analytic baseline, so
+they are outside fix 1's scope, and their theta_ss is computed with the shadowed
+exponent of 12 anyway (J-8) — changing the formula under a wrong exponent would
+mean nothing.
+
+### J-20 The rollout is now in the package, not in a plotting function
+
+Fix 1 names "the rollout, plotting" as sites. In the source both live inside
+`plot_chi_trajectory` and `plot_chi_model_dp` — matplotlib functions with the
+lifetime simulation embedded in them, which CLAUDE.md forbids.
+
+Ported the simulation to `cod/eval/rollout.py` as `chi_lifetime_rollout`, data
+only, no figures. The `dp_source` argument preserves the source's two variants:
+`"reference"` advances DP from the reference steady state (so EOL cannot reflect
+model quality) and `"model"` advances it from the model's predicted theta_TO (so a
+thermal bias shows up as an EOL shift). `RolloutResult.theta_bias` exposes the
+quantity audit M-5 disputes.
+
+Note for M-5: with all sites unified there is no formula mismatch left to appeal
+to as an explanation of the -3 degC bias. Since B and C are identical at K = 1 and
+the C-B disagreement over the rollout's K range is +0.67 to -1.03 degC with a sign
+flip, the mismatch could never have accounted for 3 degC anyway. The bias must be
+re-diagnosed against the retrained model.
+
+### J-21 `theta_ss_mode` is deliberately not a buffer
+
+If the mode were a registered buffer it would live in the `state_dict`, and
+loading a v57 checkpoint into a fixed model would silently reset the mode to the
+checkpoint's value — the loudest possible failure turned into the quietest. It is
+a plain Python attribute, so a mismatch between checkpoint and mode stays the
+caller's explicit choice and shows up in the numbers.

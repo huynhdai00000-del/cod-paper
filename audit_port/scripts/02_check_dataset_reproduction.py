@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cod.data.generate import build_test_set, generate_training_set, load_training_set
+from cod.data.steady_state import formula_A
 
 STORED = ROOT / "reference" / "artifacts" / "transformer_training_v57.npz"
 
@@ -31,7 +32,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 print("=== Training set reproduction (seed 42, N=8000) ===")
 stored = load_training_set(STORED)
-regen = generate_training_set(n_ic=8000, seed=42)
+regen = generate_training_set(n_ic=8000, seed=42, steady_state=formula_A)
 
 check("x0s exact match", np.array_equal(stored.x0s, regen.x0s),
       f"max|diff| = {np.abs(stored.x0s - regen.x0s).max():.3e}")
@@ -67,15 +68,21 @@ check("M-9 IEC exceedance ~37.0%", abs(over_iec.mean() - 0.370) < 0.005)
 check("M-9 _hi clamp exceedance ~23.2%", abs(over_clamp.mean() - 0.232) < 0.005)
 
 print("\n=== Test set (seed 999, N=100) ===")
-cases = build_test_set()
+cases = build_test_set(steady_state=formula_A)
 ck = [c for c in cases if c.kind == "CK"]
 tv = [c for c in cases if c.kind == "TV"]
 check("50 CK + 50 TV", len(ck) == 50 and len(tv) == 50)
 Kck = np.array([c.K_mean for c in ck])
 print(f"  CK K range                      {Kck.min():.3f} .. {Kck.max():.3f}")
 outside = ((Kck < 0.50) | (Kck > 1.20)).sum()
-print(f"  CK cases outside training K     {outside} / 50  (audit M-8 says 20)")
-check("M-8: 20 of 50 CK cases extrapolate", outside == 20, f"got {outside}")
+print(f"  CK cases outside training K     {outside} / 50  "
+      f"(audit M-8 says 20; that tally is a slip -- see PORT_LOG J-9)")
+# Asserting the CORRECT count. The audit's stated rule is
+# K in [0.40,0.50) u (1.20,1.40]; on the bit-identical test set that is 14, not
+# 20. The finding itself -- the CK range extends past the training support, and
+# the section 7 outlier lives there -- is confirmed exactly.
+check("CK extrapolation count is 14 under M-8's own rule", outside == 14,
+      f"got {outside}")
 
 Kall = np.array([c.K_sensors for c in cases])
 print(f"  realised K span over all cases  {Kall.min():.2f} .. {Kall.max():.2f}  "

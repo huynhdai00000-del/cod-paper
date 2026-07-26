@@ -128,6 +128,74 @@ def true_fixed_point(K: float, theta_a: float,
     return float(brentq(residual, lo, hi, xtol=xtol))
 
 
+def true_fixed_point_torch(K_t, Ta_t, n_iter: int = 20,
+                           R_load_v=None, n_exp_v=None, m_exp_v=None,
+                           DTheta_oil_R_v=None, DTheta_HS_R_v=None,
+                           alpha_Cu_v=None, T_HS_ref_C_v=None):
+    """Differentiable, vectorised true fixed point — Phase 2 fix 1.
+
+    `true_fixed_point` uses brentq: scalar, slow and not differentiable, so it
+    cannot go inside a torch forward pass evaluated on (B, n_sensors) tensors.
+
+    The fixed-point equation is
+
+        theta = theta_a + DTheta_oil_R * ((1 + K^2 R_eff(theta)) / (1 + R))^n_exp
+
+    and the right-hand side is a contraction in theta, because the only dependence
+    is through `Rf = 1 + alpha_Cu * (theta_HS - T_HS_ref_C)` with
+    alpha_Cu = 3.93e-3. The measured contraction factor is about 0.34 per
+    iteration, so 20 steps from the formula-C estimate reach ~1e-9 degC in float64
+    and ~7e-5 degC in float32 (the float32 floor at these magnitudes), against
+    brentq over the whole (K, theta_a) box — audit_port/scripts/06_check_fix1.py.
+
+    7e-5 degC is five orders of magnitude below formula A's -18.25 degC error at
+    K = 1.3, theta_a = 30, which is the error this fix exists to remove.
+
+    The buffer overrides let `CODOperator` pass its own registered buffers, so the
+    model's attractor is computed from the same constants as the rest of it.
+    """
+    R = R_load if R_load_v is None else R_load_v
+    ne = n_exp if n_exp_v is None else n_exp_v
+    me = m_exp if m_exp_v is None else m_exp_v
+    Do = DTheta_oil_R if DTheta_oil_R_v is None else DTheta_oil_R_v
+    Dhs = DTheta_HS_R if DTheta_HS_R_v is None else DTheta_HS_R_v
+    ac = alpha_Cu if alpha_Cu_v is None else alpha_Cu_v
+    Tr = T_HS_ref_C if T_HS_ref_C_v is None else T_HS_ref_C_v
+
+    load = (1.0 + K_t ** 2 * R) / (1.0 + R)
+    theta = Ta_t + Do * load ** ne     # uncorrected IEC start; converges regardless
+
+    for _ in range(n_iter):
+        theta_HS0 = theta + Dhs * ((1.0 + K_t ** 2 * R) / (1.0 + R)) ** me
+        Rf_hs = (1.0 + ac * (theta_HS0 - Tr)).clamp(0.8, 1.5)
+        theta_HS = theta + Dhs * ((1.0 + K_t ** 2 * R * Rf_hs) / (1.0 + R)) ** me
+        Rf_n = (1.0 + ac * (theta_HS - Tr)).clamp(0.8, 1.5)
+        theta = Ta_t + Do * ((1.0 + K_t ** 2 * R * Rf_n) / (1.0 + R)) ** ne
+
+    return theta
+
+
+def true_fixed_point_np(K, theta_a, n_iter: int = 20) -> np.ndarray:
+    """Numpy mirror of `true_fixed_point_torch`, for IC generation.
+
+    Same iteration, so IC generation and the model's attractor agree exactly
+    rather than to within a solver tolerance. Agrees with brentq to <1e-6 degC.
+    """
+    K = np.asarray(K, dtype=np.float64)
+    theta_a = np.asarray(theta_a, dtype=np.float64)
+    load = (1.0 + K ** 2 * R_load) / (1.0 + R_load)
+    theta = theta_a + DTheta_oil_R * load ** n_exp
+    for _ in range(n_iter):
+        theta_HS0 = theta + DTheta_HS_R * load ** m_exp
+        Rf_hs = np.clip(1.0 + alpha_Cu * (theta_HS0 - T_HS_ref_C), 0.8, 1.5)
+        theta_HS = theta + DTheta_HS_R * ((1.0 + K ** 2 * R_load * Rf_hs)
+                                          / (1.0 + R_load)) ** m_exp
+        Rf_n = np.clip(1.0 + alpha_Cu * (theta_HS - T_HS_ref_C), 0.8, 1.5)
+        theta = theta_a + DTheta_oil_R * ((1.0 + K ** 2 * R_load * Rf_n)
+                                          / (1.0 + R_load)) ** n_exp
+    return theta if theta.ndim else float(theta)
+
+
 def true_fixed_point_grid(K_arr, theta_a_arr) -> np.ndarray:
     """Vectorised `true_fixed_point` over matching arrays (elementwise)."""
     K_arr = np.atleast_1d(np.asarray(K_arr, dtype=float))
@@ -139,13 +207,17 @@ def true_fixed_point_grid(K_arr, theta_a_arr) -> np.ndarray:
     return out
 
 
-def gas_ic_from_ss(K, theta_a, steady_state=formula_B) -> np.ndarray:
+def gas_ic_from_ss(K, theta_a, steady_state=None) -> np.ndarray:
     """Gas equilibrium at (K, theta_a): c_eq = k_gen * V_arr / k_dis.
 
     Source: n12 cell 2 L1525 (`gas_ic_from_ss`), which calls `theta_TO_ss_ETC`
-    (= formula B). The `steady_state` argument exists so Phase 2 can swap in
-    `true_fixed_point` without a second definition of this function.
+    (= formula B).
+
+    PHASE 2 FIX 1: the default is now `true_fixed_point_np`. Pass
+    `steady_state=formula_B` to reproduce v57.
     """
+    if steady_state is None:
+        steady_state = true_fixed_point_np
     theta_TO_s = steady_state(K, theta_a)
     theta_HS_s = hot_spot_ETC_np(theta_TO_s, K)
     T_HS_K = np.clip(theta_HS_s + 273.15, 313.15, 573.15)
@@ -154,7 +226,8 @@ def gas_ic_from_ss(K, theta_a, steady_state=formula_B) -> np.ndarray:
     return c_eq.astype(np.float32)
 
 
-FORMULAS = {"A": formula_A, "B": formula_B, "C": formula_C, "TRUE": true_fixed_point}
+FORMULAS = {"A": formula_A, "B": formula_B, "C": formula_C,
+            "TRUE": true_fixed_point, "TRUE_ITER": true_fixed_point_np}
 
 
 def compare(K_values=(0.5, 0.8, 1.0, 1.2, 1.3),
@@ -177,6 +250,6 @@ def compare(K_values=(0.5, 0.8, 1.0, 1.2, 1.3),
 
 __all__ = [
     "formula_A", "formula_B", "formula_C",
-    "true_fixed_point", "true_fixed_point_grid",
-    "gas_ic_from_ss", "FORMULAS", "compare",
+    "true_fixed_point", "true_fixed_point_np", "true_fixed_point_torch",
+    "true_fixed_point_grid", "gas_ic_from_ss", "FORMULAS", "compare",
 ]

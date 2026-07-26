@@ -25,7 +25,7 @@ from cod.data.physics import (
     k_dis,
     k_gen,
 )
-from cod.data.steady_state import formula_A
+from cod.data.steady_state import formula_A, true_fixed_point_np
 
 # n12 cell 0 L902. Two later `N_IC = 4000` assignments exist (cell 2 L1298 and
 # L1508) but data generation runs in cell 0 before them, and the stored .npz
@@ -43,7 +43,7 @@ PROFILE_WEIGHTS = (0.11, 0.10, 0.08, 0.12, 0.11, 0.11, 0.11, 0.11, 0.08, 0.07)
 
 
 def sample_consistent_ic(rng: np.random.RandomState,
-                         steady_state=formula_A) -> np.ndarray:
+                         steady_state=None) -> np.ndarray:
     """Sample one initial condition: [theta_TO, c_H2, c_C2H2, c_C2H4, c_CO, c_CO2].
 
     Draw order, which must not change:
@@ -53,11 +53,13 @@ def sample_consistent_ic(rng: np.random.RandomState,
         4. rng.uniform(-30, 30)     offset from the steady state
         5. rng.uniform(0.5, 1.2, 5) per-gas multiplier on c_eq
 
-    KNOWN DEFECT (audit M-6): `steady_state` defaults to formula A, which is off
-    by up to -23.8 degC against the true fixed point. The docstring in the source
-    calls the result "ETC-consistent"; it is not. Left as the default so the
-    stored dataset is reproducible; Phase 2 fix 1 switches the default to
-    `true_fixed_point`, which invalidates the checkpoints.
+    PHASE 2 FIX 1 (audit M-6): `steady_state` now defaults to
+    `true_fixed_point_np`. v57 used formula A, which is off by up to -23.8 degC
+    against the true fixed point, and the source docstring calls the result
+    "ETC-consistent", which it is not. Pass `steady_state=formula_A` to reproduce
+    the stored dataset. Because this changes every IC, and therefore the training
+    distribution, the checkpoints are invalid under the new default and a retrain
+    is required.
 
     KNOWN DEFECT (audit M-9): the resulting ICs are far outside the physical
     envelope — theta_TO(0) spans 20-150 degC, H2 reaches 1.14e5 ppm and C2H2
@@ -67,10 +69,12 @@ def sample_consistent_ic(rng: np.random.RandomState,
     residual is formed. Not corrected: it is a property of this sampler, and
     changing it would also invalidate the checkpoints.
     """
+    if steady_state is None:
+        steady_state = true_fixed_point_np
     # 20% oversample of high K, added in v38d to fix a specific failing test case
     K = rng.uniform(1.0, 1.3) if rng.uniform() < 0.2 else rng.uniform(0.4, 1.3)
     theta_a = rng.uniform(15, 40)
-    theta_TO = steady_state(K, theta_a) + rng.uniform(-30, 30)
+    theta_TO = float(steady_state(K, theta_a)) + rng.uniform(-30, 30)
     theta_TO = float(np.clip(theta_TO, theta_a + 5, 150.0))
     theta_HS = hot_spot_ETC_np(theta_TO, K)
     T_HS_K = theta_HS + 273.15

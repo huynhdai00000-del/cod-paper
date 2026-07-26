@@ -49,14 +49,16 @@ print("=== COD ===")
 load("COD v57 (p=64)",
      CODOperator(state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS, d_h=128, p=64,
                  n_layers=4, n_exp_feats=12, T=TW,
-                 x_mean=ts.x_mean, x_std=ts.x_std),
+                 x_mean=ts.x_mean, x_std=ts.x_std,
+                 theta_ss_mode='formula_C'),
      "transformer_pideepOnet_v57.pt", key="model_state_dict")
 
 for p in (4, 8, 16, 32, 64):
     load(f"COD sweep p={p}",
          CODOperator(state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS,
                      d_h=max(64, p * 2), p=p, n_layers=4, n_exp_feats=12, T=TW,
-                     x_mean=ts.x_mean, x_std=ts.x_std),
+                     x_mean=ts.x_mean, x_std=ts.x_std,
+                     theta_ss_mode='formula_C'),
          f"sweep_cod_p{p}.pt")
 
 print("\n=== Monolithic ===")

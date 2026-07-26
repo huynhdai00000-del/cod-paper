@@ -86,15 +86,21 @@ class TrainingSet:
 
 
 def generate_training_set(n_ic: int = N_IC, seed: int = 42,
-                          randomise_ambient_phase: bool = False) -> TrainingSet:
+                          randomise_ambient_phase: bool = False,
+                          steady_state=None) -> TrainingSet:
     """Regenerate the training set from scratch.
 
     n12 cell 0 L1002-L1006: one RandomState(42) draws all ICs first, then all
     profiles. Not interleaved — replaying it in any other order gives a different
     dataset. `x_std` carries the `+ 1e-8` the source adds.
+
+    To reproduce `transformer_training_v57.npz` exactly, pass
+    `steady_state=formula_A` and leave `randomise_ambient_phase` False. The
+    defaults are the Phase 2 fixed behaviour and produce a different dataset.
     """
     rng = np.random.RandomState(seed)
-    x0s = np.array([sample_consistent_ic(rng) for _ in range(n_ic)])
+    x0s = np.array([sample_consistent_ic(rng, steady_state=steady_state)
+                    for _ in range(n_ic)])
     sensors = np.array([
         make_sensor_profile(rng, randomise_ambient_phase=randomise_ambient_phase)
         for _ in range(n_ic)
@@ -131,8 +137,8 @@ class TestCase:
     K_mean: float
 
 
-def build_test_set(n_test: int = 100, seed: int = 999,
-                   T: float = TW) -> list[TestCase]:
+def build_test_set(n_test: int = 100, seed: int = 999, T: float = TW,
+                   steady_state=None) -> list[TestCase]:
     """The seed-999 benchmark: first half constant K, second half time-varying.
 
     Draw order per case, which must not change:
@@ -145,13 +151,17 @@ def build_test_set(n_test: int = 100, seed: int = 999,
 
     Note the ambient phase of pi/3 on the TV branch. Training fixes the ambient
     phase at 0 (see `make_sensor_profile`); Phase 2 fix 4 closes that gap.
+
+    `steady_state` reaches `sample_consistent_ic`. Pass `formula_A` for the v57
+    test set; the default is the Phase 2 fixed behaviour, which shifts every
+    theta_TO(0) and every gas IC and therefore changes what the benchmark measures.
     """
     rng = np.random.RandomState(seed)
     tau = np.linspace(0, T, N_SENSORS)
     cases: list[TestCase] = []
 
     for k in range(n_test):
-        x0_k = sample_consistent_ic(rng)
+        x0_k = sample_consistent_ic(rng, steady_state=steady_state)
         if k < n_test // 2:
             K_k = rng.uniform(0.4, 1.4)
             Ta_k = rng.uniform(15, 45)

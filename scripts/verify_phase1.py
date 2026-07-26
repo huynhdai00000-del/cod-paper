@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from cod.data.generate import build_test_set, load_training_set
+from cod.data.steady_state import formula_A
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, STATE_NAMES_FAST, TW
 from cod.eval.benchmark import evaluate, outliers
 from cod.models.cod import CODOperator, cod_predict
@@ -79,7 +80,11 @@ def main() -> int:
 
     device = torch.device("cpu")
     ts = load_training_set(ART / "transformer_training_v57.npz")
-    cases = build_test_set(n_test=100, seed=999, T=TW)
+    # PHASE 2: the package defaults are now the FIXED behaviour, so the Phase 1
+    # gates must ask for v57 explicitly. formula_A for the ICs, formula_C for the
+    # model's attractor. If these were left at the defaults the gates would fail,
+    # which is the point of fix 1.
+    cases = build_test_set(n_test=100, seed=999, T=TW, steady_state=formula_A)
 
     md: list[str] = []
     failures: list[str] = []
@@ -99,7 +104,8 @@ def main() -> int:
         print("=== Gate 1: Table 2 (COD v57) ===")
         cod = CODOperator(state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS, d_h=128,
                           p=64, n_layers=4, n_exp_feats=12, T=TW,
-                          x_mean=ts.x_mean, x_std=ts.x_std).to(device)
+                          x_mean=ts.x_mean, x_std=ts.x_std,
+                          theta_ss_mode="formula_C").to(device)
         ckpt = torch.load(ART / "transformer_pideepOnet_v57.pt",
                           map_location=device, weights_only=False)
         cod.load_state_dict(ckpt["model_state_dict"], strict=True)
@@ -166,7 +172,8 @@ def main() -> int:
             m_cod = CODOperator(state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS,
                                 d_h=max(64, p * 2), p=p, n_layers=4,
                                 n_exp_feats=12, T=TW,
-                                x_mean=ts.x_mean, x_std=ts.x_std).to(device)
+                                x_mean=ts.x_mean, x_std=ts.x_std,
+                                theta_ss_mode="formula_C").to(device)
             m_cod.load_state_dict(
                 torch.load(ART / f"sweep_cod_p{p}.pt", map_location=device,
                            weights_only=False), strict=True)

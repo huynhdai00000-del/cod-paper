@@ -46,7 +46,13 @@ from cod.data.physics import (
     n_exp,
     tau_oil,
 )
+from cod.data.steady_state import true_fixed_point_torch
 from cod.models.blocks import ModifiedMLP, build_trunk_feats
+
+# Which analytic attractor the model is built on. "true_fixed_point" is the
+# Phase 2 fix-1 default; "formula_C" is what v57 used and is required to
+# reproduce the stored checkpoints.
+THETA_SS_MODES = ("true_fixed_point", "formula_C")
 
 
 class CODOperator(nn.Module):
@@ -80,8 +86,15 @@ class CODOperator(nn.Module):
 
     def __init__(self, state_dim: int = 6, n_sensors: int = 100, d_h: int = 128,
                  p: int = 64, n_layers: int = 4, n_exp_feats: int = 12,
-                 T: float = TW, x_mean=None, x_std=None):
+                 T: float = TW, x_mean=None, x_std=None,
+                 theta_ss_mode: str = "true_fixed_point"):
         super().__init__()
+        if theta_ss_mode not in THETA_SS_MODES:
+            raise ValueError(f"theta_ss_mode must be one of {THETA_SS_MODES}")
+        # PHASE 2 FIX 1. `theta_ss_mode` is NOT a buffer, so it does not appear in
+        # the state_dict and loading a v57 checkpoint will not silently reset it.
+        # Pass "formula_C" whenever a v57 checkpoint is loaded.
+        self.theta_ss_mode = theta_ss_mode
         self.state_dim = state_dim
         self.p_dim = p
         self.n_exp_feats = n_exp_feats
@@ -147,12 +160,21 @@ class CODOperator(nn.Module):
         return K_lo * (1 - frac) + K_hi * frac, Ta_lo * (1 - frac) + Ta_hi * frac
 
     def _theta_ss(self, K_t, Ta_t):
-        """The model's analytic attractor — formula C of audit step3 §3.2.
+        """The model's analytic attractor.
 
-        m_exp for the hot-spot gradient inside the Rf estimate, n_exp for the
-        thermal output. Coincides exactly with formula B at K = 1 and diverges as
-        K moves away from 1 in either direction. Phase 2 fix 1 replaces this with
-        the true fixed point.
+        PHASE 2 FIX 1. Two modes:
+
+        `true_fixed_point` (default) — the actual fixed point of the
+        data-generating ODE, by contraction iteration on the model's own
+        registered buffers. This is the same quantity IC generation and the
+        rollout now use, so all four sites finally agree.
+
+        `formula_C` — what v57 used: m_exp for the hot-spot gradient inside the Rf
+        estimate, n_exp for the thermal output. Coincides exactly with formula B at
+        K = 1 (the load factor is 1, so every exponent gives 1) and diverges as K
+        moves away from 1 in either direction, by -8.45 degC at K = 1.3,
+        theta_a = 30 against the true fixed point. Required to reproduce the
+        stored checkpoints.
         """
         R = self.R_load_buf
         ne = self.n_exp_buf
@@ -161,6 +183,13 @@ class CODOperator(nn.Module):
         Dhs = self.DTheta_HS_R_buf
         ac = self.alpha_Cu_buf
         Tr = self.T_HS_ref_C_buf
+
+        if self.theta_ss_mode == "true_fixed_point":
+            return true_fixed_point_torch(
+                K_t, Ta_t, R_load_v=R, n_exp_v=ne, m_exp_v=me,
+                DTheta_oil_R_v=Do, DTheta_HS_R_v=Dhs, alpha_Cu_v=ac,
+                T_HS_ref_C_v=Tr)
+
         fac_m = ((1.0 + K_t ** 2 * R) / (1.0 + R)) ** me
         fac_n = ((1.0 + K_t ** 2 * R) / (1.0 + R)) ** ne
         th_HS0 = Ta_t + Do * fac_n + Dhs * fac_m
@@ -204,6 +233,7 @@ class CODOperator(nn.Module):
             self.exp_decay_rates, self.tau_oil_buf, self.R_load_buf,
             self.n_exp_buf, self.m_exp_buf, self.DTheta_oil_R_buf,
             self.DTheta_HS_R_buf, self.alpha_Cu_buf, self.T_HS_ref_C_buf,
+            theta_ss_mode=self.theta_ss_mode,      # PHASE 2 FIX 1
         )
 
     def _interp_grid_5d(self, F_grid, t):

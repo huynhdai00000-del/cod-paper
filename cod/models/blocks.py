@@ -61,7 +61,8 @@ class ModifiedMLP(nn.Module):
 
 
 def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
-                      R_buf, ne_buf, me_buf, Do_buf, Dhs_buf, ac_buf, Tr_buf):
+                      R_buf, ne_buf, me_buf, Do_buf, Dhs_buf, ac_buf, Tr_buf,
+                      theta_ss_mode: str = "formula_C"):
     """The 32-dimensional trunk input: 28 features plus 4 K-history features.
 
     Layout, in order:
@@ -81,6 +82,14 @@ def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
     exponent shadowed by the constructor's `n_exp=12` argument (PORT_LOG J-8).
     That defect must reach this function, since the monolithic checkpoints were
     trained with it.
+
+    PHASE 2 FIX 1: `theta_ss_mode` selects which steady state the `driving`,
+    `dm_n` and `dr_n` features are built from. The default stays `formula_C`,
+    which is what every stored checkpoint was trained with; `CODOperator` passes
+    `true_fixed_point` when it is configured that way, so the fix reaches the
+    trunk features as well as the analytic baseline. The monolithic baselines stay
+    on `formula_C`: they have no analytic baseline, so they are outside fix 1's
+    scope, and their theta_ss is computed with the shadowed exponent anyway.
     """
     t_sq = t.squeeze(-1)
     exps = torch.exp(-t * exp_rates / tau_buf)
@@ -96,13 +105,18 @@ def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
     Ta_t = (torch.gather(u_sensors[:, ns:], 1, idx.unsqueeze(1)).squeeze(1) * (1 - frac)
             + torch.gather(u_sensors[:, ns:], 1, (idx + 1).unsqueeze(1)).squeeze(1) * frac)
 
-    # theta_ss at the query time == steady_state.formula_C (n_exp for the oil
-    # rise, m_exp for the hot-spot gradient inside the Rf estimate)
-    fm = ((1 + K_t ** 2 * R_buf) / (1 + R_buf)) ** me_buf
-    fn = ((1 + K_t ** 2 * R_buf) / (1 + R_buf)) ** ne_buf
-    tHS0 = Ta_t + Do_buf * fn + Dhs_buf * fm
-    Rf = (1 + ac_buf * (tHS0 - Tr_buf)).clamp(0.8, 1.5)
-    tss = Ta_t + Do_buf * ((1 + K_t ** 2 * R_buf * Rf) / (1 + R_buf)) ** ne_buf
+    # theta_ss at the query time
+    if theta_ss_mode == "true_fixed_point":
+        tss = _theta_ss_true(K_t, Ta_t, R_buf, ne_buf, me_buf, Do_buf, Dhs_buf,
+                             ac_buf, Tr_buf)
+    else:
+        # formula_C: n_exp for the oil rise, m_exp for the hot-spot gradient
+        # inside the Rf estimate
+        fm = ((1 + K_t ** 2 * R_buf) / (1 + R_buf)) ** me_buf
+        fn = ((1 + K_t ** 2 * R_buf) / (1 + R_buf)) ** ne_buf
+        tHS0 = Ta_t + Do_buf * fn + Dhs_buf * fm
+        Rf = (1 + ac_buf * (tHS0 - Tr_buf)).clamp(0.8, 1.5)
+        tss = Ta_t + Do_buf * ((1 + K_t ** 2 * R_buf * Rf) / (1 + R_buf)) ** ne_buf
 
     drv = ((tss - x0_TO.squeeze(-1)) / 80).unsqueeze(-1)
     Kn = ((K_t - 0.3) / 1.3).unsqueeze(-1)
@@ -110,11 +124,15 @@ def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
 
     # K history over the whole sensor grid
     Ks = u_sensors[:, :ns]
-    tss_s_fm = ((1 + Ks ** 2 * R_buf) / (1 + R_buf)) ** me_buf
-    tss_s_fn = ((1 + Ks ** 2 * R_buf) / (1 + R_buf)) ** ne_buf
-    tHS0_s = u_sensors[:, ns:] + Do_buf * tss_s_fn + Dhs_buf * tss_s_fm
-    Rf_s = (1 + ac_buf * (tHS0_s - Tr_buf)).clamp(0.8, 1.5)
-    tss_s = u_sensors[:, ns:] + Do_buf * ((1 + Ks ** 2 * R_buf * Rf_s) / (1 + R_buf)) ** ne_buf
+    if theta_ss_mode == "true_fixed_point":
+        tss_s = _theta_ss_true(Ks, u_sensors[:, ns:], R_buf, ne_buf, me_buf,
+                               Do_buf, Dhs_buf, ac_buf, Tr_buf)
+    else:
+        tss_s_fm = ((1 + Ks ** 2 * R_buf) / (1 + R_buf)) ** me_buf
+        tss_s_fn = ((1 + Ks ** 2 * R_buf) / (1 + R_buf)) ** ne_buf
+        tHS0_s = u_sensors[:, ns:] + Do_buf * tss_s_fn + Dhs_buf * tss_s_fm
+        Rf_s = (1 + ac_buf * (tHS0_s - Tr_buf)).clamp(0.8, 1.5)
+        tss_s = u_sensors[:, ns:] + Do_buf * ((1 + Ks ** 2 * R_buf * Rf_s) / (1 + R_buf)) ** ne_buf
 
     idx1 = torch.clamp(tn_idx.long(), 0, ns - 2) + 1
     Kcs = torch.cumsum(Ks, 1)
@@ -154,6 +172,16 @@ def interp_sensors(sensors, t_v, T, ns):
     Ta_hi = torch.gather(s_exp[:, ns:], 1, (idx + 1).unsqueeze(1)).squeeze(1)
     Ta_t = Ta_lo * (1 - frac) + Ta_hi * frac
     return torch.stack([K_t, Ta_t], dim=-1)
+
+
+def _theta_ss_true(K_t, Ta_t, R_buf, ne_buf, me_buf, Do_buf, Dhs_buf,
+                   ac_buf, Tr_buf):
+    """Thin adapter so blocks.py does not import cod.data at module scope."""
+    from cod.data.steady_state import true_fixed_point_torch
+    return true_fixed_point_torch(
+        K_t, Ta_t, R_load_v=R_buf, n_exp_v=ne_buf, m_exp_v=me_buf,
+        DTheta_oil_R_v=Do_buf, DTheta_HS_R_v=Dhs_buf, alpha_Cu_v=ac_buf,
+        T_HS_ref_C_v=Tr_buf)
 
 
 __all__ = ["ModifiedMLP", "build_trunk_feats", "interp_sensors"]

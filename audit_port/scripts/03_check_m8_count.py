@@ -19,8 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cod.data.generate import build_test_set, solve_test_set
+from cod.data.steady_state import formula_A
 
-cases = build_test_set()
+cases = build_test_set(steady_state=formula_A)
 ck = [c for c in cases if c.kind == "CK"]
 K = np.array([c.K_mean for c in ck])
 x0_TO = np.array([float(c.x0[0]) for c in ck])
