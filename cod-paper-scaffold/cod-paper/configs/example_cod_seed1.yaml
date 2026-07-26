@@ -1,0 +1,63 @@
+experiment:
+  name: cod_transformer
+  variant: cod
+  notes: "Reference run. Edit nothing in `distribution` after freezing."
+
+# Frozen before any model was trained. Hash recorded in DISTRIBUTION_FREEZE.md.
+# Any edit here must be logged in CHANGELOG_DISTRIBUTION.md and disclosed.
+distribution:
+  n_ic: 8000
+  window_minutes: 1440
+  K_base: [0.5, 1.2]
+  ambient_base: [15.0, 45.0]
+  ambient_amplitude: [0.0, 8.0]
+  ambient_phase: [0.0, 6.283185]   # was fixed at 0 in v57; randomised now
+  profile_families:
+    - {kind: flat,           weight: 0.11}
+    - {kind: ramp,           weight: 0.11}
+    - {kind: sinusoidal,     weight: 0.11, amp: [0.05, 0.40], period_rel: [0.5, 2.0]}
+    - {kind: step,           weight: 0.11}
+    - {kind: overload_spike, weight: 0.11}
+    - {kind: multi_step,     weight: 0.11}
+    - {kind: peak_then_drop, weight: 0.11}
+    - {kind: tv_high_amp,    weight: 0.11, amp: [0.30, 0.50]}
+    - {kind: tv_ramp_sin,    weight: 0.12}
+
+model:
+  kind: cod
+  branch: {layers: 4, width: 128, arch: modified_mlp}
+  trunk:  {layers: 3, width: 128, arch: modified_mlp}
+  basis_dim: 64
+  analytical_baseline: iec_60076_7
+
+training:
+  seed: 1
+  optimizer: adam
+  lr: 1.0e-3
+  lr_schedule: cosine
+  batch_size: 64
+  convergence:
+    max_epochs: 25000
+    max_wall_seconds: 3600
+    patience: 20
+    min_delta_rel: 1.0e-3
+    check_every: 100
+  causal_weighting:
+    enabled: true
+    eps_init: 0.01
+    eps_max: 50.0
+    log_space: true      # prevents the underflow that made one baseline unfair
+    weight_floor: 1.0e-8
+
+evaluation:
+  rollout_years: 1
+  tiers:
+    T1_in_distribution: {n_cases: 100, seed: 999}
+    T2_extrapolation:   {n_cases: 100, seed: 998, K_base: [0.3, 1.5]}
+    T3_out_of_family:   {n_cases: 100, seed: 997, source: ett_load_profiles}
+  ground_truth:
+    solver: LSODA
+    rtol: 1.0e-8
+  timing_reference:
+    solver: LSODA
+    rtol: matched_to_model_accuracy   # not 1e-8: that would be unfair
