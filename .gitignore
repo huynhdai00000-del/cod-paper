@@ -7,3 +7,5 @@ results/
 
 *.egg-info/
 build/
+
+reference/
