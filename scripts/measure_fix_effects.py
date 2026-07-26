@@ -35,6 +35,7 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from cod.data import physics
 from cod.data.generate import build_test_set, load_training_set
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, STATE_NAMES_FAST, TW
 from cod.data.steady_state import formula_A, true_fixed_point, true_fixed_point_np
@@ -160,6 +161,32 @@ def main() -> int:
                   f"{formula_C(k_, t_) - tr:+.2f} |")
     md.append("")
 
+    # ── Fix 2 ─────────────────────────────────────────────────────────────
+    md.append("## Fix 2 — remove the double `pd_factor`\n")
+    print("\n=== fix 2 ===")
+    rhs_fixed = physics.compute_rhs_scale_physics(double_pd_factor=False)
+    rhs_v57 = physics.compute_rhs_scale_physics(double_pd_factor=True)
+    ratio = rhs_v57 / rhs_fixed
+    md.append("Gate 1 movement: **none, and none is possible.** The surviving "
+              "`ode_physics_loss` uses a raw residual and never consumes "
+              "`RHS_SCALE` (PORT_LOG J-4), so this defect had no effect on v57's "
+              "results. It is a hygiene fix that stops the next person who reaches "
+              "for `RHS_SCALE` from getting a squared factor.\n")
+    md.append("Verified directly on the quantity it targets:\n")
+    md.append("| state | v57 (doubled) | fixed | ratio |")
+    md.append("|---|---|---|---|")
+    for i, nm in enumerate(STATE_NAMES_FAST):
+        md.append(f"| `{nm}` | {rhs_v57[i]:.6e} | {rhs_fixed[i]:.6e} | "
+                  f"{ratio[i]:.4f} |")
+    md.append(f"\nOnly `c_C2H2` changes, by a factor of {ratio[2]:.3f}. "
+              f"`pd_factor_np(1.3) = {physics.pd_factor_np(1.3):.4f}` and "
+              f"{physics.pd_factor_np(1.3):.4f}^2 / {physics.pd_factor_np(1.3):.4f} "
+              f"= {physics.pd_factor_np(1.3):.4f}, which is the factor recovered — "
+              "the second application was squaring it, exactly as audit section 8.3 "
+              "says.\n")
+    print(f"  c_C2H2 RHS_SCALE ratio {ratio[2]:.4f} (pd_factor(1.3)="
+          f"{physics.pd_factor_np(1.3):.4f})")
+
     # ── Summary ───────────────────────────────────────────────────────────
     md.append("## Summary\n")
     md.append("| fix | moves Gate 1? | measured effect | checkpoint still valid? |")
@@ -168,7 +195,9 @@ def main() -> int:
               f"{base['overall']:.1f}% -> {f1_both['overall']:.1f}%, theta_TO MAE "
               f"{base['mae_TO']:.2f} -> {f1_both['mae_TO']:.2f} degC | "
               f"**no — retrain required** |")
-    md.append("| 2-5 | not yet applied | — | — |")
+    md.append(f"| 2 double pd_factor | no, by construction | `c_C2H2` RHS_SCALE "
+              f"/{ratio[2]:.3f}; nothing consumes it | yes |")
+    md.append("| 3-5 | not yet applied | — | — |")
     md.append("")
 
     (ROOT / args.out).write_text("\n".join(md) + "\n", encoding="utf-8")

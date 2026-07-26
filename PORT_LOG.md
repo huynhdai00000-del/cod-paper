@@ -348,3 +348,19 @@ loading a v57 checkpoint into a fixed model would silently reset the mode to the
 checkpoint's value — the loudest possible failure turned into the quietest. It is
 a plain Python attribute, so a mismatch between checkpoint and mode stays the
 caller's explicit choice and shows up in the numbers.
+
+### J-22 Fix 2 is a hygiene fix with a measured effect of zero on any result
+
+Removing the second `pd_factor_np(K)` from `compute_rhs_scale_physics` changes
+`RHS_SCALE[2]` (c_C2H2) by exactly `pd_factor_np(1.3) = 2.2150`, confirming the
+audit's arithmetic: the factor was being squared, 2.2150 -> 4.9062 at K = 1.3.
+No other state changes, because `pd_factor` only touches the acetylene channel.
+
+**No published number moves**, and that is the honest report rather than a
+disappointment. The surviving `ode_physics_loss` uses a raw residual and never
+consumes `RHS_SCALE` (J-4), so this defect never reached a result in v57. It is
+worth fixing because the next person to reach for `RHS_SCALE` — for instance
+anyone reinstating the DERIV_SCALE-normalised residual from the discarded cell-0
+loss — would otherwise get a squared partial-discharge factor with no indication.
+
+`double_pd_factor=True` restores the v57 arithmetic for the comparison.

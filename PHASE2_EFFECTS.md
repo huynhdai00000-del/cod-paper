@@ -45,10 +45,28 @@ The numbers above are therefore **not** a claim that the fixed model is worse. T
 | 1.3 | 30 | 131.94 | 113.69 | -18.25 | 123.49 | -8.45 |
 | 1.3 | 45 | 152.49 | 128.69 | -23.80 | 141.88 | -10.61 |
 
+## Fix 2 — remove the double `pd_factor`
+
+Gate 1 movement: **none, and none is possible.** The surviving `ode_physics_loss` uses a raw residual and never consumes `RHS_SCALE` (PORT_LOG J-4), so this defect had no effect on v57's results. It is a hygiene fix that stops the next person who reaches for `RHS_SCALE` from getting a squared factor.
+
+Verified directly on the quantity it targets:
+
+| state | v57 (doubled) | fixed | ratio |
+|---|---|---|---|
+| `theta_TO` | 4.420322e-01 | 4.420322e-01 | 1.0000 |
+| `c_H2` | 1.406029e-03 | 1.406029e-03 | 1.0000 |
+| `c_C2H2` | 1.574478e-03 | 7.108254e-04 | 2.2150 |
+| `c_C2H4` | 1.119854e-03 | 1.119854e-03 | 1.0000 |
+| `c_CO` | 7.841226e-04 | 7.841226e-04 | 1.0000 |
+| `c_CO2` | 8.312543e-04 | 8.312543e-04 | 1.0000 |
+
+Only `c_C2H2` changes, by a factor of 2.215. `pd_factor_np(1.3) = 2.2150` and 2.2150^2 / 2.2150 = 2.2150, which is the factor recovered — the second application was squaring it, exactly as audit section 8.3 says.
+
 ## Summary
 
 | fix | moves Gate 1? | measured effect | checkpoint still valid? |
 |---|---|---|---|
 | 1 unify steady state | **yes** | overall 1.5% -> 7.2%, theta_TO MAE 0.40 -> 1.23 degC | **no — retrain required** |
-| 2-5 | not yet applied | — | — |
+| 2 double pd_factor | no, by construction | `c_C2H2` RHS_SCALE /2.215; nothing consumes it | yes |
+| 3-5 | not yet applied | — | — |
 

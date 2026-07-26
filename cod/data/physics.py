@@ -141,24 +141,31 @@ def fast_rhs_np(x, K, theta_a):
     return np.concatenate([[d0], d_gas])
 
 
-def compute_rhs_scale_physics():
+def compute_rhs_scale_physics(double_pd_factor: bool = False):
     """Physics-derived RHS_SCALE.
 
-    KNOWN DEFECT (audit MINOR, §8.3): `pd_factor_np(K)` is applied twice to the
-    C2H2 row. `fast_rhs_np` already multiplies gen[1] by it, and that element
-    arrives at index 2 of the returned array; the `dx[2] *= pd_factor_np(K)`
-    below squares it (2.215**2 at K = 1.3). Ported unchanged.
+    PHASE 2 FIX 2 (audit MINOR, §8.3). `fast_rhs_np` already multiplies gen[1] by
+    `pd_factor_np(K)`, and that element arrives at index 2 of the returned array.
+    The source then applied `dx[2] *= pd_factor_np(K)` to the same element,
+    squaring the factor — 2.215 becomes 4.906 at K = 1.3. The second application
+    is now gone.
 
-    Blast radius in v57 is nil: the surviving `ode_physics_loss` uses a raw
-    residual and never consumes RHS_SCALE. Phase 2 fix 2 removes the second
-    application.
+    `double_pd_factor=True` restores the v57 arithmetic, for the before/after
+    comparison in PHASE2_EFFECTS.md.
+
+    Blast radius in v57 was nil, and that is worth stating rather than glossing:
+    the surviving `ode_physics_loss` uses a raw residual and never consumes
+    RHS_SCALE (PORT_LOG J-4), so no published number changes. This is a hygiene
+    fix — it stops the next person who reaches for RHS_SCALE from silently getting
+    a squared partial-discharge factor on the acetylene channel.
     """
     rhs_max = np.zeros(STATE_DIM_FAST)
     for K in np.linspace(0.5, 1.3, 10):
         for T in np.linspace(40, 120, 10):
             x = np.array([T, 50.0, 15.0, 80.0, 300.0, 800.0])
             dx = np.abs(fast_rhs_np(x, K, 30.0))
-            dx[2] *= pd_factor_np(K)          # <-- the second application
+            if double_pd_factor:
+                dx[2] *= pd_factor_np(K)      # v57: squares the factor
             rhs_max = np.maximum(rhs_max, dx)
     return np.maximum(rhs_max, rhs_max.max() * 1e-4).astype(np.float32)
 
