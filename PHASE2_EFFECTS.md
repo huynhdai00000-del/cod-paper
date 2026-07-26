@@ -62,11 +62,32 @@ Verified directly on the quantity it targets:
 
 Only `c_C2H2` changes, by a factor of 2.215. `pd_factor_np(1.3) = 2.2150` and 2.2150^2 / 2.2150 = 2.2150, which is the factor recovered — the second application was squaring it, exactly as audit section 8.3 says.
 
+## Fix 3 — causal weighting in log space, floored, shared schedule
+
+Gate 1 movement: **none, and none is possible.** Causal weighting exists only inside the training loss; evaluation never touches it.
+
+Verified on the failure mode it targets. `cum` is the cumulative chunk residual; the weight is `exp(-eps * cum)`.
+
+| eps * cum | v57 linear-space weight | fixed (log space, floor 1e-8) | v57 underflowed? |
+|---|---|---|---|
+| 1 | 3.679e-01 | 3.679e-01 | no |
+| 10 | 4.540e-05 | 4.540e-05 | no |
+| 50 | 1.929e-22 | 1.000e-08 | no |
+| 88 | 6.055e-39 | 1.000e-08 | no |
+| 104 | 0.000e+00 | 1.000e-08 | **YES** |
+| 200 | 0.000e+00 | 1.000e-08 | **YES** |
+| 1000 | 0.000e+00 | 1.000e-08 | **YES** |
+
+The v57 weight reaches exactly 0.0 at `eps * cum` around 88, the float32 underflow point of `exp(-x)`. Past that the later collocation chunks contribute **nothing** to the loss and the model trains on the early window only. That is what produced Mono Fair's `wm = 0.000` against COD's `wm = 0.988` and invalidated the comparison (audit B-1). The floored log-space weight bottoms out at 1e-8, which is small but never zero, so the gradient never disappears.
+
+The epsilon schedule is now shared: `EpsilonSchedule(shared=True)` advances on a fixed epoch count rather than on each model's own `wm`, so two models being compared follow the same trajectory. Under v57 they did not — COD's epsilon climbed to the 50.0 cap because its weights stayed high, while Mono Fair's froze near the start because its did not.
+
 ## Summary
 
 | fix | moves Gate 1? | measured effect | checkpoint still valid? |
 |---|---|---|---|
 | 1 unify steady state | **yes** | overall 1.5% -> 7.2%, theta_TO MAE 0.40 -> 1.23 degC | **no — retrain required** |
 | 2 double pd_factor | no, by construction | `c_C2H2` RHS_SCALE /2.215; nothing consumes it | yes |
-| 3-5 | not yet applied | — | — |
+| 3 causal weighting | no, by construction | weight floor 0.0 -> 1e-8; no underflow at any eps*cum; schedule now shared | yes |
+| 4-5 | not yet applied | — | — |
 

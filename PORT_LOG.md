@@ -364,3 +364,46 @@ anyone reinstating the DERIV_SCALE-normalised residual from the discarded cell-0
 loss — would otherwise get a squared partial-discharge factor with no indication.
 
 `double_pd_factor=True` restores the v57 arithmetic for the comparison.
+
+### J-23 Fix 3: the clamp goes in log space, not on the exponentiated weight
+
+`max(exp(-eps*cum), floor)` looks equivalent to clamping the log and is not. By
+the time `exp(-120)` has been computed in float32 it is already exactly 0.0 and
+all ordering information is gone, so every deep chunk would receive the identical
+weight `floor`. Clamping `-eps*cum` to `log(floor)` first preserves the ordering
+of the chunks right up to the floor, and only then flattens.
+
+Measured, with `eps * cum` on the first chunk:
+
+| eps*cum | v57 linear | fixed (log space, floor 1e-8) |
+|---|---|---|
+| 1 | 3.679e-01 | 3.679e-01 |
+| 10 | 4.540e-05 | 4.540e-05 |
+| 50 | 1.929e-22 | 1.000e-08 |
+| 88 | 6.055e-39 (subnormal) | 1.000e-08 |
+| 104 | **0.000e+00** | 1.000e-08 |
+| 1000 | **0.000e+00** | 1.000e-08 |
+
+The two agree exactly until the floor binds at `eps*cum = log(1e8) = 18.4`. v57
+goes subnormal around 88 and reaches exactly zero by 104.
+
+Confirmed end to end on a real training step: `SharedPhysicsTrainer` on a
+monolithic model, which previously reported `causal_weight_min = 0.0` on its first
+step, now reports exactly `1.000e-08` and the harness's underflow pathology no
+longer fires.
+
+### J-24 Fix 3 needed the schedule fixed too, not just the weights
+
+Flooring the weights alone would not have made the comparison fair. `eps_causal`
+advances when the model's own `wm` stays above 0.50 for 200 epochs. With a floor
+in place Mono Fair's `wm` no longer reaches zero, but it still sits far below
+COD's, so its epsilon would still advance more slowly and the two models would
+still be optimising different objectives — the same defect, less visibly.
+
+`EpsilonSchedule(shared=True)` therefore advances epsilon on elapsed epochs alone,
+unconditionally, every `patience_needed` epochs. Two models trained for the same
+number of epochs now follow the identical epsilon trajectory whatever their
+residuals do. The objective becomes a property of the protocol rather than of the
+model, which is the only way an epoch-matched comparison means anything.
+
+`shared=False` restores the v57 behaviour.

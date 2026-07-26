@@ -187,6 +187,39 @@ def main() -> int:
     print(f"  c_C2H2 RHS_SCALE ratio {ratio[2]:.4f} (pd_factor(1.3)="
           f"{physics.pd_factor_np(1.3):.4f})")
 
+    # ── Fix 3 ─────────────────────────────────────────────────────────────
+    md.append("## Fix 3 — causal weighting in log space, floored, shared schedule\n")
+    print("\n=== fix 3 ===")
+    from cod.training.losses import causal_weights
+    md.append("Gate 1 movement: **none, and none is possible.** Causal weighting "
+              "exists only inside the training loss; evaluation never touches it.\n")
+    md.append("Verified on the failure mode it targets. `cum` is the cumulative "
+              "chunk residual; the weight is `exp(-eps * cum)`.\n")
+    md.append("| eps * cum | v57 linear-space weight | fixed (log space, "
+              "floor 1e-8) | v57 underflowed? |")
+    md.append("|---|---|---|---|")
+    for prod in (1.0, 10.0, 50.0, 88.0, 104.0, 200.0, 1000.0):
+        r2m = torch.tensor([[float(prod), 0.0]], dtype=torch.float32)
+        _, wm_old = causal_weights(r2m, 1.0, log_space=False, floor=0.0)
+        _, wm_new = causal_weights(r2m, 1.0, log_space=True, floor=1e-8)
+        md.append(f"| {prod:g} | {wm_old:.3e} | {wm_new:.3e} | "
+                  f"{'**YES**' if wm_old == 0.0 else 'no'} |")
+        print(f"  eps*cum={prod:7g}  old wm={wm_old:.3e}  new wm={wm_new:.3e}")
+    md.append("\nThe v57 weight reaches exactly 0.0 at `eps * cum` around 88, the "
+              "float32 underflow point of `exp(-x)`. Past that the later "
+              "collocation chunks contribute **nothing** to the loss and the model "
+              "trains on the early window only. That is what produced Mono Fair's "
+              "`wm = 0.000` against COD's `wm = 0.988` and invalidated the "
+              "comparison (audit B-1). The floored log-space weight bottoms out at "
+              "1e-8, which is small but never zero, so the gradient never "
+              "disappears.\n")
+    md.append("The epsilon schedule is now shared: `EpsilonSchedule(shared=True)` "
+              "advances on a fixed epoch count rather than on each model's own "
+              "`wm`, so two models being compared follow the same trajectory. "
+              "Under v57 they did not — COD's epsilon climbed to the 50.0 cap "
+              "because its weights stayed high, while Mono Fair's froze near the "
+              "start because its did not.\n")
+
     # ── Summary ───────────────────────────────────────────────────────────
     md.append("## Summary\n")
     md.append("| fix | moves Gate 1? | measured effect | checkpoint still valid? |")
@@ -197,7 +230,9 @@ def main() -> int:
               f"**no — retrain required** |")
     md.append(f"| 2 double pd_factor | no, by construction | `c_C2H2` RHS_SCALE "
               f"/{ratio[2]:.3f}; nothing consumes it | yes |")
-    md.append("| 3-5 | not yet applied | — | — |")
+    md.append("| 3 causal weighting | no, by construction | weight floor "
+              "0.0 -> 1e-8; no underflow at any eps*cum; schedule now shared | yes |")
+    md.append("| 4-5 | not yet applied | — | — |")
     md.append("")
 
     (ROOT / args.out).write_text("\n".join(md) + "\n", encoding="utf-8")

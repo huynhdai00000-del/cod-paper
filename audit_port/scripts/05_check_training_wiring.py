@@ -47,7 +47,7 @@ def protocol_checks(name: str, trainer) -> None:
     check("train_step returns loss", "loss" in m and np.isfinite(m["loss"]),
           f"loss = {m.get('loss')!r}")
     check("train_step returns causal_weight_min", "causal_weight_min" in m,
-          f"wm = {m.get('causal_weight_min'):.6f}")
+          f"wm = {m.get('causal_weight_min'):.3e}")
     clamps = {k: v for k, v in m.items() if k.startswith("clamp_frac_")}
     check("train_step returns clamp_frac_*", len(clamps) > 0,
           ", ".join(f"{k[len('clamp_frac_'):]}={v:.1%}" for k, v in clamps.items()))
@@ -66,7 +66,12 @@ def protocol_checks(name: str, trainer) -> None:
     check("harness.train completes", out.epochs_reached > 0,
           f"stop_reason={out.stop_reason}, epochs={out.epochs_reached}")
     check("pathology report captured wm", out.pathology.causal_weight_min is not None,
-          f"wm = {out.pathology.causal_weight_min:.6f}")
+          f"wm = {out.pathology.causal_weight_min:.3e}")
+    check("fix 3: causal weight never reaches exactly zero",
+          out.pathology.causal_weight_underflowed is False
+          and out.pathology.causal_weight_min > 0.0,
+          f"min wm = {out.pathology.causal_weight_min:.3e}, "
+          f"underflowed={out.pathology.causal_weight_underflowed}")
     check("pathology report captured clamps",
           len(out.pathology.clamp_hit_fraction) > 0,
           str({k: round(v, 4) for k, v in out.pathology.clamp_hit_fraction.items()}))

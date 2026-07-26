@@ -40,22 +40,38 @@ import torch
 import torch.optim as optim
 
 from cod.data.physics import STATE_DIM_FAST
-from cod.training.losses import ode_physics_loss, ode_physics_loss_shared
+from cod.training.losses import (
+    CAUSAL_WEIGHT_FLOOR,
+    ode_physics_loss,
+    ode_physics_loss_shared,
+)
 
 
 @dataclass
 class EpsilonSchedule:
     """The causal-weighting epsilon schedule, n12 cell 1 L1037-L1039.
 
-    `eps_causal` starts at 0.01 and is multiplied by 1.10 once `wm` has stayed
-    above 0.50 for 200 consecutive epochs, capped at 50.0.
+    PHASE 2 FIX 3 (audit B-1), the second half of the fix. v57 started `eps_causal`
+    at 0.01 and multiplied it by 1.10 once `wm` had stayed above 0.50 for 200
+    consecutive epochs, capped at 50.0 — a schedule driven by **each model's own**
+    `wm`, so two models being compared did not follow the same epsilon trajectory.
+    COD's weights stayed high, so its epsilon climbed all the way to the 50.0 cap;
+    Mono Fair's underflowed to zero, so its epsilon froze near the start. The two
+    arms were optimising measurably different objectives, which is what makes that
+    comparison unusable however the weights themselves are computed.
 
-    KNOWN DEFECT (audit B-1): the schedule is driven by each model's OWN `wm`, so
-    two models being compared do not share an epsilon trajectory. COD's weights
-    stayed high, so its epsilon climbed to the 50.0 cap; Mono Fair's underflowed
-    to zero, so its epsilon froze near the start. The two arms of the comparison
-    therefore optimised different objectives. Phase 2 fix 3 makes the schedule
-    shared and model-independent.
+    `shared=True` (default) advances epsilon purely on elapsed epochs: every
+    `patience_needed` epochs, unconditionally. Two models trained for the same
+    number of epochs then see the identical epsilon trajectory regardless of how
+    their residuals behave, so the objective is a property of the protocol rather
+    than of the model.
+
+    `shared=False` restores the v57 wm-driven behaviour for comparison.
+
+    Fixing the weights without fixing the schedule would not have been enough:
+    with a floor in place Mono Fair's `wm` would no longer hit zero, but it would
+    still sit far below COD's, so the two epsilon trajectories would still
+    diverge. Both halves are needed.
     """
 
     eps: float = 0.01
@@ -63,9 +79,17 @@ class EpsilonSchedule:
     factor: float = 1.10
     eps_max: float = 50.0
     wm_threshold: float = 0.50
+    shared: bool = True
     _patience: int = field(default=0, repr=False)
+    _epoch: int = field(default=0, repr=False)
 
     def observe(self, wm: float) -> None:
+        self._epoch += 1
+        if self.shared:
+            # Model-independent: advance on elapsed epochs alone.
+            if self._epoch % self.patience_needed == 0 and self.eps < self.eps_max:
+                self.eps = min(self.eps * self.factor, self.eps_max)
+            return
         if wm > self.wm_threshold:
             self._patience += 1
         else:
@@ -138,7 +162,10 @@ class CODTrainer:
     def __init__(self, model, x0s, sensors, device=None, lr: float = 1e-3,
                  n_fb: int = 128, n_col: int = 80, n_chunks: int = 5,
                  max_epochs: int = 25_000, seed: int = 0,
-                 val_fraction: float = 0.05):
+                 val_fraction: float = 0.05,
+                 causal_log_space: bool = True,
+                 causal_floor: float = CAUSAL_WEIGHT_FLOOR,
+                 causal_schedule_shared: bool = True):
         self.device = device or next(model.parameters()).device
         self.model = model
         self.n_fb = n_fb
@@ -154,7 +181,10 @@ class CODTrainer:
 
         self.lam_state = torch.ones(self.n_states, device=self.device)
         self.lam_state[0] = 5.0
-        self.eps_schedule = EpsilonSchedule()
+        # PHASE 2 FIX 3
+        self.causal_log_space = causal_log_space
+        self.causal_floor = causal_floor
+        self.eps_schedule = EpsilonSchedule(shared=causal_schedule_shared)
         self._last_grad_norm = float("nan")
 
     def train_step(self) -> dict:
@@ -165,7 +195,8 @@ class CODTrainer:
         L_states, wm = ode_physics_loss(
             self.model, x0_b, s_b, n_col=self.n_col, n_chunks=self.n_chunks,
             eps_causal=self.eps_schedule.eps, return_per_state=True,
-            diagnostics=diag,
+            diagnostics=diag, causal_log_space=self.causal_log_space,
+            causal_floor=self.causal_floor,
         )
 
         with torch.no_grad():
@@ -215,7 +246,9 @@ class CODTrainer:
         x0_v, s_v = self.data.val_batch()
         L_states, _ = ode_physics_loss(
             self.model, x0_v, s_v, n_col=self.n_col, n_chunks=self.n_chunks,
-            eps_causal=self.eps_schedule.eps, return_per_state=True)
+            eps_causal=self.eps_schedule.eps, return_per_state=True,
+            causal_log_space=self.causal_log_space,
+            causal_floor=self.causal_floor)
         val = float(sum(self.lam_state[s] * L_states[s]
                         for s in range(self.n_states)).item())
         self.model.zero_grad(set_to_none=True)
@@ -244,7 +277,10 @@ class SharedPhysicsTrainer:
     def __init__(self, model, predict_fn, x0s, sensors, device=None,
                  lr: float = 1e-3, n_fb: int = 128, n_col: int = 60,
                  n_chunks: int = 5, max_epochs: int = 25_000, seed: int = 0,
-                 val_fraction: float = 0.05):
+                 val_fraction: float = 0.05,
+                 causal_log_space: bool = True,
+                 causal_floor: float = CAUSAL_WEIGHT_FLOOR,
+                 causal_schedule_shared: bool = True):
         self.device = device or next(model.parameters()).device
         self.model = model
         self.predict_fn = predict_fn
@@ -261,14 +297,18 @@ class SharedPhysicsTrainer:
 
         self.lam = torch.ones(self.n_states, device=self.device)
         self.lam[0] = 5.0
-        self.eps_schedule = EpsilonSchedule()
+        # PHASE 2 FIX 3
+        self.causal_log_space = causal_log_space
+        self.causal_floor = causal_floor
+        self.eps_schedule = EpsilonSchedule(shared=causal_schedule_shared)
         self._last_grad_norm = float("nan")
 
     def _loss_terms(self, x0_b, s_b, diag: dict | None = None):
         r2c, w, wm = ode_physics_loss_shared(
             self.model, self.predict_fn, x0_b, s_b, n_col=self.n_col,
             n_chunks=self.n_chunks, eps_causal=self.eps_schedule.eps,
-            diagnostics=diag)
+            diagnostics=diag, causal_log_space=self.causal_log_space,
+            causal_floor=self.causal_floor)
         with torch.no_grad():
             Lv = torch.tensor([r2c[:, :, s].mean().item()
                                for s in range(self.n_states)], device=self.device)

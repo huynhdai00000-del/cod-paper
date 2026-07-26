@@ -121,29 +121,57 @@ def make_log_collocation(T: float, n_col: int, device) -> torch.Tensor:
 # ═══════════════════════════════════════════════════════════════════════════
 # The ODE residual loss
 # ═══════════════════════════════════════════════════════════════════════════
-def causal_weights(r2m: torch.Tensor, eps_causal: float) -> tuple[torch.Tensor, float]:
+CAUSAL_WEIGHT_FLOOR = 1e-8
+
+
+def causal_weights(r2m: torch.Tensor, eps_causal: float,
+                   log_space: bool = True,
+                   floor: float = CAUSAL_WEIGHT_FLOOR
+                   ) -> tuple[torch.Tensor, float]:
     """Causal weighting over collocation chunks: w_j = exp(-eps * sum_{i<j} r2m_i).
 
-    KNOWN DEFECT (audit B-1), the reason the Mono Fair comparison is invalid:
-    computing this in linear space underflows to **exactly 0.0** once
-    `eps_causal * cum` exceeds about 88 in float32. Mono Fair finished training
-    with `wm = 0.000` while COD had `wm = 0.988`, so the monolithic baseline was
-    effectively trained on the early part of the window only. `eps_causal` also
-    climbs on a schedule driven by each model's own `wm`, so the two models did
-    not even share an epsilon trajectory.
+    PHASE 2 FIX 3 (audit B-1), the defect that invalidated the Mono Fair
+    comparison. In linear float32, `exp(-x)` reaches **exactly 0.0** at x around
+    88. Mono Fair finished training with `wm = 0.000` while COD had `wm = 0.988`,
+    so the monolithic baseline was effectively trained on the early part of the
+    window only, and the two arms of the comparison were not optimising the same
+    objective.
 
-    Ported unchanged. Phase 2 fix 3 moves this to log space with a floor of 1e-8
-    and a schedule shared across models. Returning `w.min()` is what lets the
-    harness detect the underflow rather than discover it in a log file.
+    `log_space=True` (default) computes the weights via `log w = -eps * cum`,
+    clamps that to `log(floor)`, and exponentiates. The result is mathematically
+    the same function wherever it does not underflow, and bottoms out at `floor`
+    instead of at zero, so later chunks always retain some gradient. `floor=1e-8`
+    is small enough not to distort the weighting and large enough to survive
+    float32.
+
+    Clamping in log space rather than clamping the exponentiated value matters:
+    `exp(-100)` has already lost all information by the time you could clamp it,
+    so `max(exp(-eps*cum), floor)` would give every deep chunk the identical
+    weight `floor`. Clamping `-eps*cum` first preserves the ordering right up to
+    the floor.
+
+    `log_space=False, floor=0.0` restores the v57 arithmetic for the before/after
+    comparison in PHASE2_EFFECTS.md.
+
+    Returning `w.min()` is what lets the harness detect an underflow instead of
+    leaving it to be found in a log file.
     """
     cum = torch.cumsum(r2m, dim=1) - r2m
-    w = torch.exp(-eps_causal * cum).detach()
+    if log_space:
+        log_w = (-eps_causal * cum).clamp(min=math.log(floor))
+        w = torch.exp(log_w).detach()
+    else:
+        w = torch.exp(-eps_causal * cum).detach()
+        if floor > 0.0:
+            w = w.clamp(min=floor)
     return w, float(w.min().item())
 
 
 def ode_physics_loss(model, x0, sensors, n_col: int = 40, n_chunks: int = 5,
                      eps_causal: float = 0.01, return_per_state: bool = False,
-                     diagnostics: dict | None = None):
+                     diagnostics: dict | None = None,
+                     causal_log_space: bool = True,
+                     causal_floor: float = CAUSAL_WEIGHT_FLOOR):
     """Causally weighted mean squared ODE residual.
 
     LAST DEFINITION WINS. Three definitions exist in n12; the one that trained
@@ -210,7 +238,8 @@ def ode_physics_loss(model, x0, sensors, n_col: int = 40, n_chunks: int = 5,
     r2c = r2.reshape(B, n_chunks, pch, n).mean(dim=2)
     r2m = r2c.mean(dim=-1)
 
-    w, wm = causal_weights(r2m, eps_causal)
+    w, wm = causal_weights(r2m, eps_causal, log_space=causal_log_space,
+                           floor=causal_floor)
 
     if diagnostics is not None:
         diagnostics.update(_clamp_diagnostics(x_pred_raw, x_pred_c, u_t, _lo, _hi))
@@ -262,7 +291,9 @@ def _clamp_diagnostics(x_pred_raw, x_pred_c, u_t, lo, hi) -> dict:
 
 def ode_physics_loss_shared(model, predict_fn, x0, sensors, n_col: int = 60,
                             n_chunks: int = 5, eps_causal: float = 0.01,
-                            diagnostics: dict | None = None):
+                            diagnostics: dict | None = None,
+                            causal_log_space: bool = True,
+                            causal_floor: float = CAUSAL_WEIGHT_FLOOR):
     """The residual loss used by the SHARED trainer, which is not the same loss.
 
     This is the inline body of `train_physics` (n15 cell 2 L334, n00 cell 4 L167),
@@ -321,7 +352,8 @@ def ode_physics_loss_shared(model, predict_fn, x0, sensors, n_col: int = 60,
     r2c = res.reshape(B, n_chunks, pch, n).mean(dim=2)
     r2m = r2c.mean(dim=-1)
 
-    w, wm = causal_weights(r2m, eps_causal)
+    w, wm = causal_weights(r2m, eps_causal, log_space=causal_log_space,
+                           floor=causal_floor)
 
     if diagnostics is not None:
         diagnostics["causal_weight_min"] = wm
@@ -473,7 +505,8 @@ __all__ = [
     "CHI_W_NP", "W_DP", "k_chi_max",
     "STATE_CLAMP_LO_NP", "STATE_CLAMP_HI_NP",
     "FAST_LIM_LO", "FAST_LIM_HI", "X_NORM_LO", "X_NORM_HI", "CHI_W",
-    "make_log_collocation", "causal_weights", "ode_physics_loss",
+    "make_log_collocation", "causal_weights", "CAUSAL_WEIGHT_FLOOR",
+    "ode_physics_loss",
     "ode_physics_loss_shared",
     "compute_chi", "chi_monotonicity_loss", "chi_rate_loss_v10",
 ]
