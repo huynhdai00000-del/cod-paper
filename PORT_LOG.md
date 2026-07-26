@@ -152,8 +152,115 @@ Phase 2 distribution (randomised ambient phase, `log_space: true`,
 
 No `DISTRIBUTION_FREEZE.md` exists yet, so no frozen hash was violated.
 
+### J-12a Shared blocks live in `cod/models/blocks.py`
+
+`ModifiedMLP` and the 32-dimensional trunk feature builder appear in all three
+notebooks; the target layout names only `cod.py` and `monolithic.py`. Defining
+them in both would break the "each function defined exactly once" rule, so they
+sit in `blocks.py` alongside `interp_sensors`.
+
+The two trunk-feature spellings are equivalent, which I checked rather than
+assumed: n12 computes the query index twice, once with the bound `ns-2+1e-6` for
+(K_t, Ta_t) and once with `ns-1-1e-6` for the K-history block, while n15/n00
+compute it once with the first bound. For every t in [0, T] both floor to the
+same integer — where `tn <= ns-2` both give `floor(tn)`, and where
+`ns-2 < tn <= ns-1` both give `ns-2`. That equivalence is why n15's COD scores the
+same 1.5% from the same checkpoint, and it is confirmed empirically by gate 1 and
+gate 2 agreeing.
+
+n00 also has a third spelling, `ModMLP`, with abbreviated attribute names
+(`eU/eV/f/hl/o/a`). Those are not valid `state_dict` keys for any stored
+checkpoint, so only the n12/n15 spelling is ported.
+
 ### J-12 Model `__init__` no longer prints
 
 `PIDeepONet_v24`, `PIDeepONet_Mono_Fair` and `PIDeepONet_Mono_MultiHead` all
 print their parameter count on construction. Replaced by a `n_parameters()`
 method; the capacity sweep prints it from the caller. No numerical effect.
+
+### J-13 A validation split was added, because there was none
+
+`harness.train` needs `validation_loss()`. The source has no validation set: every
+run simply exhausted its epoch budget, so "converged" was never checked against
+anything. That is the mechanism behind audit B-1 — a baseline reported at 171 of
+25,000 epochs, with the loss unmoved at 1.3e+08, because nothing was watching.
+
+`cod/training/train.py::_BatchSource` carves out 5% of the training set with its
+own `RandomState`, and `train_batch` never returns those indices. This is an
+addition, not a port: it cannot change any Phase 1 number because Phase 1 trains
+nothing, and it satisfies README rule 4 (adjustments only against a validation
+split taken from the training distribution).
+
+`validation_loss()` cannot run under `no_grad` — the residual needs
+`autograd.grad` through t — so it explicitly zeroes the model's gradients
+afterwards. Verified: after a validation call no parameter has a nonzero gradient
+(`audit_port/scripts/05_check_training_wiring.py`).
+
+### J-14 Two trainers, because the source has two different loops
+
+`train_v34` (n12 cell 1) trained `transformer_pideepOnet_v57.pt`. `train_physics`
+(n15 cell 2 / n00 cell 4) trained every monolithic baseline **and every
+capacity-sweep checkpoint, including `sweep_cod_p*.pt`**. They are not two
+spellings of one loop. Three substantive differences, ported as
+`CODTrainer` and `SharedPhysicsTrainer`:
+
+| | `train_v34` (COD v57) | `train_physics` (baselines + sweep) |
+|---|---|---|
+| collocation | two-sided log, 75% forward + 25% dense near t=T | one-sided forward log only |
+| RHS state clamp | per-state `_hi = [200, 500, 200, 1000, 3000, 8000]` | scalar `.clamp(0, 500)` |
+| adaptive weight target | causally *weighted* per-state loss | plain mean over batch and chunks |
+| `lam[1:]` floor | `clamp(min=0.0)` | none |
+
+The scalar `clamp(0, 500)` matters: CO sits at ~1e2-1e3 ppm and CO2 at ~1e3 ppm,
+so a ceiling of 500 truncates them hard and the shared trainer forms its gas
+residuals at a clamped state far more often. Measured on a smoke run, that clamp
+was active on 44% of samples.
+
+Bearing on gate 2: the capacity sweep is internally consistent — both arms used
+`train_physics` — but **neither arm was trained the way the headline COD model
+was**. Worth a sentence in the paper if the sweep is cited as evidence about COD.
+
+### J-15 `causal_weights` was factored out so the underflow is observable
+
+The two-line weight computation is now
+`cod/training/losses.py::causal_weights`, returning `(w, w.min())`. Same
+arithmetic, same `.detach()`. Factoring it out gives Phase 2 fix 3 exactly one
+place to change, and gives `train_step` a `causal_weight_min` to report so the
+harness's underflow check fires.
+
+It fires immediately in practice. On the very first step of a smoke run,
+`SharedPhysicsTrainer` on a monolithic model returned `causal_weight_min =
+0.000000` and the harness printed the pathology warning — reproducing audit B-1's
+`wm=0.000` live rather than by inference.
+
+### J-16 Clamp diagnostics are recomputed, not instrumented in-place
+
+`train_step` must return `clamp_frac_<name>` per clamp. Rather than add
+bookkeeping inside `fast_rhs_torch` — which would put new tensor operations on the
+live loss path — `losses._clamp_diagnostics` recomputes the clamped quantities
+under `no_grad` from the same inputs. The loss path stays byte-identical to the
+source and the diagnostics cannot perturb it.
+
+Reported clamps, all from audit section 8.4: `state_hi`, `state_lo`, `Rf_etc`,
+`T_HS_min`, `V_arr_max`, and `state_scalar_500` for the shared trainer.
+
+### J-17 Audit M-3's absolute-error reconstruction is off, in both directions
+
+M-3 back-converts the monolithic per-state NMAEs into absolute errors and gets
+theta_TO 13.9 degC, H2 1.72 ppm, C2H2 0.23 ppm, flagging the method as an
+"order-of-magnitude reconstruction: mean-of-ratios combined with a median
+denominator".
+
+Measuring them directly from the reproduced predictions instead:
+
+| state | M-3 reconstruction | measured | ratio |
+|---|---|---|---|
+| `theta_TO` | 13.9 degC | 13.41 degC | 1.04x high |
+| `c_H2` | 1.72 ppm | 0.306 ppm | 5.6x high |
+| `c_C2H2` | 0.23 ppm | 0.705 ppm | 3.1x low |
+
+The audit declared this method's limits, so this is a refinement rather than an
+error, and **the finding is unaffected**: the worst gas error is still about 2% of
+its IEC 60599 attention level, so none of the huge percentages describes a
+diagnostically meaningful error, and the genuinely large error is still thermal.
+`PHASE1_VERIFICATION.md` reports the measured column. Quote that one.
