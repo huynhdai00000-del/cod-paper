@@ -7,7 +7,10 @@ experiment:
 # Any edit here must be logged in CHANGELOG_DISTRIBUTION.md and disclosed.
 distribution:
   n_ic: 8000
-  window_minutes: 1440
+  n_sensors: 100
+  seed: 42
+  steady_state_formula: true_fixed_point   # Phase 2 fix 1
+  window_minutes: 720          # TW = 12 h; the scaffold said 1440 (PORT_LOG J-11)
   K_base: [0.5, 1.2]
   ambient_base: [15.0, 45.0]
   ambient_amplitude: [0.0, 8.0]
@@ -32,6 +35,9 @@ model:
 
 training:
   seed: 1
+  loop: train_v34
+  n_collocation: 80
+  n_chunks: 5
   optimizer: adam
   lr: 1.0e-3
   lr_schedule: cosine
@@ -48,6 +54,7 @@ training:
     eps_max: 50.0
     log_space: true      # prevents the underflow that made one baseline unfair
     weight_floor: 1.0e-8
+    schedule_shared: true  # same eps trajectory for every model (fix 3)
 
 evaluation:
   rollout_years: 1
@@ -56,8 +63,10 @@ evaluation:
     T2_extrapolation:   {n_cases: 100, seed: 998, K_base: [0.3, 1.5]}
     T3_out_of_family:   {n_cases: 100, seed: 997, source: ett_load_profiles}
   ground_truth:
-    solver: LSODA
+    solver: RK45
     rtol: 1.0e-8
+    atol: 1.0e-10
+    right_edge_guard: 0.9999
   timing_reference:
     solver: LSODA
     rtol: matched_to_model_accuracy   # not 1e-8: that would be unfair

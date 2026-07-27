@@ -3,18 +3,116 @@
 
 Usage:
     python scripts/run.py --config configs/example_cod_seed1.yaml --out results/
+    python scripts/run.py --config configs/example_cod_seed1.yaml \
+        --max-epochs 100 --n-ic 50 --device cpu       # wiring smoke test
+
+Reads a config, builds the model and the dataset from it, trains through the
+shared harness, evaluates, and writes `run.json` carrying the commit hash, the
+config hash, the distribution hash, the seed and the environment.
+
+Two things this deliberately does NOT do:
+
+  * report a performance number for a model that did not converge. The harness
+    returns `converged=False` with a `stop_reason`, and that is written into
+    `run.json` and printed. A non-converged run is reported as non-converged.
+  * treat NMAE as the headline. `cod/eval/metrics.py` reports absolute error in
+    physical units first, with the fraction of cases where the normalisation
+    denominator hit its floor.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import numpy as np
+import torch
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from cod.config import load_config
+from cod.data.generate import build_test_set, generate_training_set, load_training_set
+from cod.data.physics import STATE_DIM_FAST, STATE_NAMES_FAST
+from cod.data.steady_state import formula_A, true_fixed_point_np
+from cod.eval.benchmark import evaluate
+from cod.eval.metrics import TRANSFORMER_STATES, evaluate_state, report
+from cod.models.cod import CODOperator, cod_predict
+from cod.models.monolithic import (
+    MonolithicFair,
+    MonolithicMultiHead,
+    MonolithicSoftIC,
+    mono_predict,
+)
 from cod.provenance import warn_if_dirty, write_run_record
-from cod.training.harness import ConvergenceCriterion
+from cod.training.harness import ConvergenceCriterion, train
+from cod.training.train import CODTrainer, SharedPhysicsTrainer
+
+MODEL_BUILDERS = {
+    "cod": CODOperator,
+    "monolithic_fair": MonolithicFair,
+    "monolithic_multihead": MonolithicMultiHead,
+    "monolithic_softic": MonolithicSoftIC,
+}
+
+
+def build_model(cfg, x_mean, x_std, device):
+    """Instantiate the model named by `cfg['model']['kind']`."""
+    m = cfg["model"]
+    kind = m["kind"]
+    if kind not in MODEL_BUILDERS:
+        raise ValueError(f"unknown model kind {kind!r}; "
+                         f"expected one of {sorted(MODEL_BUILDERS)}")
+
+    d_h = int(m.get("branch", {}).get("width", 128))
+    p = int(m.get("basis_dim", 64))
+    n_layers = int(m.get("branch", {}).get("layers", 4))
+    n_exp_feats = int(m.get("n_exp_feats", 12))
+    n_sensors = int(cfg["distribution"].get("n_sensors", 100))
+    T = float(cfg["distribution"]["window_minutes"])
+
+    if kind == "cod":
+        model = CODOperator(
+            state_dim=STATE_DIM_FAST, n_sensors=n_sensors, d_h=d_h, p=p,
+            n_layers=n_layers, n_exp_feats=n_exp_feats, T=T,
+            x_mean=x_mean, x_std=x_std,
+            theta_ss_mode=m.get("steady_state", "true_fixed_point"),
+        )
+        return model, cod_predict
+
+    model = MODEL_BUILDERS[kind](d_h=d_h, p=p, n_layers=n_layers,
+                                n_exp=n_exp_feats, x_mean=x_mean, x_std=x_std)
+    return model, mono_predict
+
+
+def build_trainer(cfg, model, predict_fn, ts, device, max_epochs):
+    """Pick the training loop the config asks for.
+
+    `loop: train_v34` is what trained the headline COD model; `train_physics` is
+    what trained every baseline and every capacity-sweep checkpoint. They are
+    different loops, not two names for one (see cod/training/train.py), so the
+    config has to say which.
+    """
+    t = cfg["training"]
+    loop = t.get("loop", "train_v34" if cfg["model"]["kind"] == "cod"
+                 else "train_physics")
+    cw = t.get("causal_weighting", {})
+    kwargs = dict(
+        x0s=ts.x0s, sensors=ts.sensors, device=device,
+        lr=float(t.get("lr", 1e-3)),
+        n_fb=int(t.get("batch_size", 128)),
+        n_col=int(t.get("n_collocation", 80 if loop == "train_v34" else 60)),
+        n_chunks=int(t.get("n_chunks", 5)),
+        max_epochs=max_epochs,
+        seed=int(t.get("seed", 0)),
+        causal_log_space=bool(cw.get("log_space", True)),
+        causal_floor=float(cw.get("weight_floor", 1e-8)),
+        causal_schedule_shared=bool(cw.get("schedule_shared", True)),
+    )
+    if loop == "train_v34":
+        return CODTrainer(model, **kwargs), loop
+    return SharedPhysicsTrainer(model, predict_fn, **kwargs), loop
 
 
 def main() -> int:
@@ -23,6 +121,16 @@ def main() -> int:
     ap.add_argument("--out", default="results")
     ap.add_argument("--freeze-hash", default=None,
                     help="Expected distribution hash; fails if it has changed.")
+    ap.add_argument("--max-epochs", type=int, default=None,
+                    help="Override the config's epoch ceiling (smoke tests).")
+    ap.add_argument("--n-ic", type=int, default=None,
+                    help="Override the config's n_ic (smoke tests).")
+    ap.add_argument("--n-test", type=int, default=None,
+                    help="Override the number of evaluation cases.")
+    ap.add_argument("--device", default=None, choices=["cpu", "cuda"])
+    ap.add_argument("--train-data", default=None,
+                    help="Path to a stored .npz. Required to reproduce a "
+                         "checkpoint; omit to generate from the config.")
     args = ap.parse_args()
 
     warn_if_dirty()
@@ -33,26 +141,158 @@ def main() -> int:
         assert_distribution_unchanged(cfg, args.freeze_hash)
 
     seed = int(cfg["training"]["seed"])
-    out_dir = Path(args.out) / f"{cfg['experiment']['name']}_{cfg['experiment']['variant']}_s{seed}_{cfg.hash}"
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    device = torch.device(args.device or
+                          ("cuda" if torch.cuda.is_available() else "cpu"))
+    dist = cfg["distribution"]
+    n_ic = args.n_ic if args.n_ic is not None else int(dist["n_ic"])
+    max_epochs = (args.max_epochs if args.max_epochs is not None
+                  else int(cfg["training"]["convergence"]["max_epochs"]))
+    T = float(dist["window_minutes"])
+
+    smoke = args.max_epochs is not None or args.n_ic is not None
+    out_dir = (Path(args.out) / f"{cfg['experiment']['name']}_"
+               f"{cfg['experiment']['variant']}_s{seed}_{cfg.hash}"
+               f"{'_smoke' if smoke else ''}")
 
     print(f"[run] config          {args.config}")
     print(f"[run] config hash     {cfg.hash}")
     print(f"[run] distribution    {cfg.distribution_hash}")
     print(f"[run] seed            {seed}")
+    print(f"[run] device          {device}")
+    print(f"[run] n_ic            {n_ic}"
+          f"{'  (OVERRIDDEN)' if args.n_ic is not None else ''}")
+    print(f"[run] max_epochs      {max_epochs}"
+          f"{'  (OVERRIDDEN)' if args.max_epochs is not None else ''}")
     print(f"[run] out             {out_dir}")
+    if smoke:
+        print("[run] SMOKE TEST: budgets overridden on the command line. "
+              "The numbers below prove the wiring runs; they are not results.")
 
-    crit = ConvergenceCriterion(**cfg["training"]["convergence"])
+    # ── Data ───────────────────────────────────────────────────────────────
+    v57_ic = dist.get("steady_state_formula") == "A"
+    ic_formula = formula_A if v57_ic else true_fixed_point_np
+    phase_range = dist.get("ambient_phase", [0.0, 6.283185])
+    randomise_phase = float(phase_range[1]) > float(phase_range[0])
+    clip_step = True
+    for fam in dist.get("profile_families", []):
+        if fam.get("kind") == "step" and fam.get("clipped") is False:
+            clip_step = False
 
-    # TODO(Claude Code): build model from cfg['model'], build data from
-    # cfg['distribution'], then:
-    #     outcome = train(model, crit)
-    #     metrics = evaluate_system(pred, true)
-    # and pass outcome.to_dict() / metrics into write_run_record(extra=...).
+    if args.train_data:
+        ts = load_training_set(args.train_data)
+        print(f"[data] loaded {len(ts)} ICs from {args.train_data}")
+    else:
+        ts = generate_training_set(n_ic=n_ic, seed=int(dist.get("seed", 42)),
+                                   randomise_ambient_phase=randomise_phase,
+                                   steady_state=ic_formula, clip_step=clip_step)
+        print(f"[data] generated {len(ts)} ICs  "
+              f"(steady_state={'A' if v57_ic else 'true_fixed_point'}, "
+              f"randomise_phase={randomise_phase}, clip_step={clip_step})")
 
-    write_run_record(out_dir, cfg.summary(), seed,
-                     extra={"convergence_criterion": crit.__dict__,
-                            "status": "scaffold_only"})
-    print(f"[run] wrote {out_dir / 'run.json'}")
+    # ── Model ──────────────────────────────────────────────────────────────
+    model, predict_fn = build_model(cfg, ts.x_mean, ts.x_std, device)
+    model = model.to(device)
+    print(f"[model] {cfg['model']['kind']}  {model.n_parameters():,} parameters")
+
+    # ── Train ──────────────────────────────────────────────────────────────
+    trainer, loop = build_trainer(cfg, model, predict_fn, ts, device, max_epochs)
+    crit_cfg = dict(cfg["training"]["convergence"])
+    crit_cfg["max_epochs"] = max_epochs
+    crit = ConvergenceCriterion(**crit_cfg)
+    print(f"[train] loop={loop}  criterion={crit}")
+    outcome = train(trainer, crit, log_every=max(1, max_epochs // 5))
+
+    # ── Evaluate ───────────────────────────────────────────────────────────
+    tier_cfg = cfg["evaluation"]["tiers"]
+    tier_name = next(iter(tier_cfg))
+    tier = tier_cfg[tier_name]
+    n_test = args.n_test if args.n_test is not None else int(tier["n_cases"])
+    guard = float(cfg["evaluation"].get("ground_truth", {})
+                  .get("right_edge_guard", 0.9999))
+
+    cases = build_test_set(n_test=n_test, seed=int(tier["seed"]), T=T,
+                           steady_state=ic_formula)
+    bench = evaluate(model, predict_fn, cases, label=cfg["experiment"]["variant"],
+                     T=T, t_clip_frac=guard, device=device)
+    print("\n" + bench.summary())
+    print("\n" + bench.physical_summary())
+
+    # The metric the paper should report: absolute error in physical units,
+    # with the floor-hit rate, and the test tier stated explicitly.
+    gt = np.stack([
+        __import__("cod.data.generate", fromlist=["rk45_ground_truth"])
+        .rk45_ground_truth(c.x0, c.K_sensors, c.Ta_sensors,
+                           np.linspace(0, T, 50), T=T, t_clip_frac=guard)
+        for c in cases
+    ])
+    with torch.no_grad():
+        preds = []
+        t_q = torch.tensor(np.linspace(0, T, 50), dtype=torch.float32,
+                           device=device).unsqueeze(-1)
+        for c in cases:
+            s_k = torch.tensor(np.concatenate([c.K_sensors, c.Ta_sensors]),
+                               dtype=torch.float32, device=device).unsqueeze(0)
+            x0_t = torch.tensor(c.x0, dtype=torch.float32,
+                                device=device).unsqueeze(0)
+            preds.append(predict_fn(model, x0_t.expand(50, -1).contiguous(),
+                                    s_k.expand(50, -1).contiguous(),
+                                    t_q).cpu().numpy())
+    pred = np.stack(preds)
+
+    phys = {}
+    for i, spec in enumerate(TRANSFORMER_STATES[:STATE_DIM_FAST]):
+        phys[spec.name] = evaluate_state(pred[:, :, i], gt[:, :, i], spec)
+    print("\n" + report(phys, tier=tier_name))
+
+    # ── Record ─────────────────────────────────────────────────────────────
+    extra = {
+        "status": "smoke_test" if smoke else "run",
+        "training_loop": loop,
+        "model_kind": cfg["model"]["kind"],
+        "model_parameters": model.n_parameters(),
+        "n_ic": len(ts),
+        "device": str(device),
+        "convergence_criterion": crit.__dict__,
+        "outcome": outcome.to_dict(),
+        "fair_comparison_candidate": outcome.is_fair_comparison_candidate(),
+        "evaluation": {
+            "tier": tier_name,
+            "n_cases": n_test,
+            "right_edge_guard": guard,
+            "nmae_per_state_pct": dict(zip(STATE_NAMES_FAST,
+                                           bench.per_state_pct.round(4).tolist())),
+            "nmae_overall_pct": bench.overall_pct,
+            "nmae_constant_K_pct": bench.ck_pct,
+            "nmae_time_varying_pct": bench.tv_pct,
+            "nmae_denominator_floor_hit_frac": dict(
+                zip(STATE_NAMES_FAST, bench.floor_hit_frac().round(4).tolist())),
+            "mae_physical_units": {k: v.to_dict() for k, v in phys.items()},
+        },
+        "data_provenance": {
+            "source": args.train_data or "generated",
+            "steady_state_formula": "A" if v57_ic else "true_fixed_point",
+            "randomise_ambient_phase": randomise_phase,
+            "clip_step": clip_step,
+        },
+    }
+    # loss_history can be 25,000 floats; keep the file readable.
+    hist = extra["outcome"].pop("loss_history", [])
+    extra["outcome"]["loss_history_len"] = len(hist)
+    extra["outcome"]["loss_history_head"] = [round(float(x), 8) for x in hist[:20]]
+    extra["outcome"]["loss_history_tail"] = [round(float(x), 8) for x in hist[-20:]]
+
+    path = write_run_record(out_dir, cfg.summary(), seed, extra=extra)
+    (out_dir / "loss_history.json").write_text(
+        json.dumps([float(x) for x in hist]), encoding="utf-8")
+    print(f"\n[run] wrote {path}")
+
+    if not outcome.converged:
+        print("[run] This run did NOT converge. Report it as non-converged, "
+              f"with stop_reason={outcome.stop_reason!r} and its learning curve. "
+              "Do not quote the metrics above as a performance figure.")
     return 0
 
 

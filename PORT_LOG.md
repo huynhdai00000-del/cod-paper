@@ -462,3 +462,80 @@ families.
 Correctness rather than results: 12 of 8000 profiles is a small share of the
 training mass. Worth making anyway, because a documented sampling range the code
 does not honour is exactly what a reviewer checks.
+
+---
+
+## Wiring
+
+### J-27 `scripts/run.py` reads the fix switches out of the config
+
+The five Phase 2 fixes are argument-level switches in the package. `run.py` derives
+them from the config block rather than hard-coding them, so a config file fully
+determines a run:
+
+| config key | switch |
+|---|---|
+| `distribution.steady_state_formula: A` | `steady_state=formula_A` (fix 1 off) |
+| `distribution.ambient_phase: [0.0, 0.0]` | `randomise_ambient_phase=False` (fix 4 off) |
+| `profile_families[kind=step].clipped: false` | `clip_step=False` (fix 5 off) |
+| `training.causal_weighting.log_space` | fix 3, weight computation |
+| `training.causal_weighting.weight_floor` | fix 3, floor |
+| `training.causal_weighting.schedule_shared` | fix 3, epsilon schedule |
+| `model.steady_state` | fix 1, the model's attractor |
+
+`configs/v57_faithful.yaml` sets all of them to the v57 values;
+`configs/example_cod_seed1.yaml` sets them to the fixed values. So the difference
+between reproducing v57 and running the corrected pipeline is a config file, not a
+code edit — which is what makes the distribution hash meaningful.
+
+### J-28 `training.loop` has to be stated in the config
+
+Since `train_v34` and `train_physics` are different loops (J-14), the config
+declares which one to use. Default is `train_v34` for `kind: cod` and
+`train_physics` otherwise, matching how the source paired them, but a config can
+say either — which is what a genuinely matched comparison would need.
+
+### J-29 `run.py` reports both metrics and refuses to launder non-convergence
+
+Every run writes the source's NMAE **and** `cod/eval/metrics.py`'s absolute error
+in physical units with the per-state floor-hit rate, plus the test tier by name.
+`run.json` carries `outcome.converged`, `outcome.stop_reason` and
+`fair_comparison_candidate`, and a non-converged run prints an explicit refusal to
+have its metrics quoted as a performance figure. `loss_history` is written to a
+separate `loss_history.json` so `run.json` stays readable, with head and tail
+inline.
+
+### J-30 End-to-end smoke test result
+
+`python scripts/run.py --config configs/example_cod_seed1.yaml --max-epochs 100
+--n-ic 50 --device cpu` on CPU, torch 2.13.0+cpu. Exit code 0, 827 s wall.
+`results/` is gitignored, so the outcome is recorded here.
+
+Wiring proved, in the sense that each mechanism actually fired rather than merely
+not crashing:
+
+* data generated with all three distribution fixes active — `steady_state=
+  true_fixed_point`, `randomise_phase=True`, `clip_step=True`;
+* `train_v34` selected from the config, 154,178-parameter COD model;
+* loss fell from 1.5e+00 to 1.8e-03 over 100 epochs (wiring, not convergence);
+* the harness reported `converged=False`, `stop_reason='epoch_budget'`,
+  `fair_comparison_candidate=False`, and printed an explicit refusal to have the
+  metrics quoted as a performance figure;
+* the clamp pathology fired: `state_hi` active on 21.9% of samples, plus
+  `Rf_etc` 4.0%, `T_HS_min` 1.6%, `V_arr_max` 1.4%;
+* `causal_weight_min = 0.99999`, well clear of the floor, so fix 3's floor was not
+  masking anything here;
+* both metrics printed, with the tier named `T1_in_distribution`;
+* `run.json` carries the commit hash, config hash `2b2f5462ac53a64d`, distribution
+  hash `9bf8b092546cfa30`, seed, device, library versions and the full outcome;
+  `warn_if_dirty` correctly flagged the tree as dirty at run time.
+
+These are **not results**. 100 epochs is 0.4% of the 25,000-epoch budget and n_ic
+50 is 0.6% of the 8000-IC training set, on top of a distribution that no
+checkpoint corresponds to. The run exists to prove the pipeline executes.
+
+For the record, since it will be misread otherwise: overall NMAE 10.9%, theta_TO
+MAE 1.475 degC. Better than nothing would suggest for 100 epochs, because the
+analytic IEC baseline carries most of the thermal signal before the network has
+learned anything — which is the architecture working as designed, not evidence of
+fast convergence.
