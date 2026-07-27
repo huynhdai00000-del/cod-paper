@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 from cod.data import physics
 from cod.data.generate import build_test_set, load_training_set
+from cod.data.profiles import make_sensor_profile
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, STATE_NAMES_FAST, TW
 from cod.data.steady_state import formula_A, true_fixed_point, true_fixed_point_np
 from cod.eval.benchmark import evaluate
@@ -220,6 +221,39 @@ def main() -> int:
               "because its weights stayed high, while Mono Fair's froze near the "
               "start because its did not.\n")
 
+    # ── Fix 4 ─────────────────────────────────────────────────────────────
+    md.append("## Fix 4 — randomise the ambient phase\n")
+    print("\n=== fix 4 ===")
+    rng_a = np.random.RandomState(7)
+    rng_b = np.random.RandomState(7)
+    prof_v57 = np.array([make_sensor_profile(rng_a, randomise_ambient_phase=False)
+                         for _ in range(2000)])
+    prof_fix = np.array([make_sensor_profile(rng_b, randomise_ambient_phase=True)
+                         for _ in range(2000)])
+    Ta_v57 = prof_v57[:, N_SENSORS:]
+    Ta_fix = prof_fix[:, N_SENSORS:]
+    start_dev_v57 = np.abs(Ta_v57[:, 0] - Ta_v57.mean(axis=1))
+    start_dev_fix = np.abs(Ta_fix[:, 0] - Ta_fix.mean(axis=1))
+    md.append("Gate 1 movement: **none.** Only the training profile generator draws "
+              "an ambient phase; the seed-999 test set builds its own profiles with "
+              "a hard-coded phase of pi/3.\n")
+    md.append("That is precisely the gap (audit B-5): training saw one phase, the "
+              "test set another. Verified on 2000 sampled profiles:\n")
+    md.append("| | v57 (phase fixed at 0) | fixed (phase ~ U(0, 2 pi)) |")
+    md.append("|---|---|---|")
+    md.append(f"| mean \\|Ta(0) - mean(Ta)\\| | {start_dev_v57.mean():.4f} degC | "
+              f"{start_dev_fix.mean():.4f} degC |")
+    md.append(f"| profiles starting at their mean | {(start_dev_v57 < 1e-2).mean():.1%} | "
+              f"{(start_dev_fix < 1e-2).mean():.1%} |")
+    md.append(f"\nUnder v57 every single training profile starts at its ambient "
+              f"mean, because sin(0) = 0. The test set's pi/3 phase starts it "
+              f"{np.sin(np.pi / 3):.3f} of the amplitude above the mean instead — "
+              "a systematic offset the model never saw in training. After the fix "
+              f"only {(start_dev_fix < 1e-2).mean():.1%} of training profiles have "
+              "that special structure.\n")
+    print(f"  profiles starting at ambient mean: v57 "
+          f"{(start_dev_v57 < 1e-2).mean():.1%} -> fixed {(start_dev_fix < 1e-2).mean():.1%}")
+
     # ── Summary ───────────────────────────────────────────────────────────
     md.append("## Summary\n")
     md.append("| fix | moves Gate 1? | measured effect | checkpoint still valid? |")
@@ -232,7 +266,11 @@ def main() -> int:
               f"/{ratio[2]:.3f}; nothing consumes it | yes |")
     md.append("| 3 causal weighting | no, by construction | weight floor "
               "0.0 -> 1e-8; no underflow at any eps*cum; schedule now shared | yes |")
-    md.append("| 4-5 | not yet applied | — | — |")
+    md.append(f"| 4 ambient phase | no | training profiles starting at their "
+              f"ambient mean {(start_dev_v57 < 1e-2).mean():.0%} -> "
+              f"{(start_dev_fix < 1e-2).mean():.0%} | **no — training "
+              f"distribution changed** |")
+    md.append("| 5 | not yet applied | — | — |")
     md.append("")
 
     (ROOT / args.out).write_text("\n".join(md) + "\n", encoding="utf-8")

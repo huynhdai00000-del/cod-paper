@@ -86,7 +86,7 @@ class TrainingSet:
 
 
 def generate_training_set(n_ic: int = N_IC, seed: int = 42,
-                          randomise_ambient_phase: bool = False,
+                          randomise_ambient_phase: bool = True,
                           steady_state=None) -> TrainingSet:
     """Regenerate the training set from scratch.
 
@@ -95,8 +95,9 @@ def generate_training_set(n_ic: int = N_IC, seed: int = 42,
     dataset. `x_std` carries the `+ 1e-8` the source adds.
 
     To reproduce `transformer_training_v57.npz` exactly, pass
-    `steady_state=formula_A` and leave `randomise_ambient_phase` False. The
-    defaults are the Phase 2 fixed behaviour and produce a different dataset.
+    `steady_state=formula_A`, `randomise_ambient_phase=False` and
+    `clip_step=False`. The defaults are the Phase 2 fixed behaviour and produce a
+    different dataset.
     """
     rng = np.random.RandomState(seed)
     x0s = np.array([sample_consistent_ic(rng, steady_state=steady_state)

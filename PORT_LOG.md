@@ -407,3 +407,26 @@ residuals do. The objective becomes a property of the protocol rather than of th
 model, which is the only way an epoch-matched comparison means anything.
 
 `shared=False` restores the v57 behaviour.
+
+### J-25 Fix 4: the phase draw stays last in the rng sequence
+
+`rng.uniform(0, 2*pi)` for the ambient phase is drawn after `Ta_base` and
+`Ta_amp`, at the very end of `make_sensor_profile`. That position is load-bearing:
+a `RandomState` is a stream, so inserting a draw anywhere earlier shifts every
+subsequent number and would change the generated dataset **even with the fix
+disabled**. Placing it last means `randomise_ambient_phase=False` still reproduces
+`transformer_training_v57.npz` byte for byte, which is re-verified after this
+commit.
+
+Measured effect: under v57, **100.0%** of training profiles start exactly at their
+ambient mean, because the phase is 0 and sin(0) = 0. After the fix, 0.7% do — the
+residual being profiles whose randomly drawn phase happens to land near 0 or 2 pi,
+which is the correct behaviour rather than a leftover.
+
+The gap this closes is specific. The seed-999 test set uses a phase of pi/3, so its
+ambient profile starts sin(pi/3) = 0.866 of the amplitude **above** its mean. Under
+v57 the model never saw an ambient waveform that did anything but start at its
+mean, so the test set's ambient shape was structurally outside the training family
+on one axis, even though its amplitude and base marginals sat inside it. That is a
+sharper statement than "the test set is in distribution" and worth making in the
+paper: the marginals overlapped while the joint structure did not.

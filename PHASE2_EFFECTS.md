@@ -82,6 +82,19 @@ The v57 weight reaches exactly 0.0 at `eps * cum` around 88, the float32 underfl
 
 The epsilon schedule is now shared: `EpsilonSchedule(shared=True)` advances on a fixed epoch count rather than on each model's own `wm`, so two models being compared follow the same trajectory. Under v57 they did not — COD's epsilon climbed to the 50.0 cap because its weights stayed high, while Mono Fair's froze near the start because its did not.
 
+## Fix 4 — randomise the ambient phase
+
+Gate 1 movement: **none.** Only the training profile generator draws an ambient phase; the seed-999 test set builds its own profiles with a hard-coded phase of pi/3.
+
+That is precisely the gap (audit B-5): training saw one phase, the test set another. Verified on 2000 sampled profiles:
+
+| | v57 (phase fixed at 0) | fixed (phase ~ U(0, 2 pi)) |
+|---|---|---|
+| mean \|Ta(0) - mean(Ta)\| | 0.0000 degC | 2.5012 degC |
+| profiles starting at their mean | 100.0% | 0.7% |
+
+Under v57 every single training profile starts at its ambient mean, because sin(0) = 0. The test set's pi/3 phase starts it 0.866 of the amplitude above the mean instead — a systematic offset the model never saw in training. After the fix only 0.7% of training profiles have that special structure.
+
 ## Summary
 
 | fix | moves Gate 1? | measured effect | checkpoint still valid? |
@@ -89,5 +102,6 @@ The epsilon schedule is now shared: `EpsilonSchedule(shared=True)` advances on a
 | 1 unify steady state | **yes** | overall 1.5% -> 7.2%, theta_TO MAE 0.40 -> 1.23 degC | **no — retrain required** |
 | 2 double pd_factor | no, by construction | `c_C2H2` RHS_SCALE /2.215; nothing consumes it | yes |
 | 3 causal weighting | no, by construction | weight floor 0.0 -> 1e-8; no underflow at any eps*cum; schedule now shared | yes |
-| 4-5 | not yet applied | — | — |
+| 4 ambient phase | no | training profiles starting at their ambient mean 100% -> 1% | **no — training distribution changed** |
+| 5 | not yet applied | — | — |
 

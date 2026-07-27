@@ -86,7 +86,7 @@ def sample_consistent_ic(rng: np.random.RandomState,
 
 
 def make_sensor_profile(rng: np.random.RandomState,
-                        randomise_ambient_phase: bool = False) -> np.ndarray:
+                        randomise_ambient_phase: bool = True) -> np.ndarray:
     """Sample one (K, theta_a) sensor profile, returned flat as [K(100), Ta(100)].
 
     Draw order, which must not change:
@@ -102,10 +102,13 @@ def make_sensor_profile(rng: np.random.RandomState,
     (min 0.257134, 0.15% of profiles below the floor). Left unclipped here;
     Phase 2 fix 5 adds the clip.
 
-    KNOWN DEFECT (audit B-5, fix 4): the ambient phase is fixed at 0 while the
-    seed-999 test set uses a phase of pi/3, so training never sees the test
-    waveform's phase. `randomise_ambient_phase` is the Phase 2 fix-4 switch and
-    defaults to False to reproduce v57.
+    PHASE 2 FIX 4 (audit B-5): the ambient phase is now drawn from U(0, 2 pi).
+    v57 fixed it at 0 while the seed-999 test set uses pi/3, so training never saw
+    the test waveform's phase. Because sin(0) = 0, every single v57 training
+    profile started exactly at its ambient mean, while the test set's pi/3 phase
+    starts sin(pi/3) = 0.866 of the amplitude above it — a systematic offset the
+    model never met in training. Pass `randomise_ambient_phase=False` to reproduce
+    v57. This changes the training distribution, so a retrain is required.
 
     KNOWN GAP (audit B-5): the training family was widened with the annotated
     goal `target TV gap: 2.7% -> <2.0%`, and 'sinusoidal' was added with the
@@ -164,8 +167,10 @@ def make_sensor_profile(rng: np.random.RandomState,
     Ta_base = rng.uniform(15, 45)
     Ta_amp = rng.uniform(0, 8)
     if randomise_ambient_phase:
-        # Phase 2 fix 4. Drawn last so that with the flag off the draw sequence,
-        # and therefore the stored dataset, is bit-identical to v57.
+        # PHASE 2 FIX 4. Drawn LAST so that with the flag off the draw sequence,
+        # and therefore the stored dataset, stays bit-identical to v57. Any other
+        # position for this draw would shift every subsequent random number and
+        # silently change the dataset even with the fix disabled.
         Ta_phase = rng.uniform(0, 2 * np.pi)
     else:
         Ta_phase = 0.0
