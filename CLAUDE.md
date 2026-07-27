@@ -1,6 +1,8 @@
 ﻿# COD benchmark
 
 Đọc README.md trước khi làm gì.
+Đọc DECISIONS.md trước khi đề xuất bất kỳ hướng đi nào.
+Không mở lại mục CLOSED. Phát hiện mâu thuẫn thì ghi vào mục "Bằng chứng mới".
 
 ## Chế độ làm việc
 

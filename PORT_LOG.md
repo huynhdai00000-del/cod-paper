@@ -539,3 +539,90 @@ MAE 1.475 degC. Better than nothing would suggest for 100 epochs, because the
 analytic IEC baseline carries most of the thermal signal before the network has
 learned anything — which is the architecture working as designed, not evidence of
 fast convergence.
+
+---
+
+## O-1 — amplification mechanism
+
+### J-31 The hybrid arm was built by calling `_gas_integral` directly
+
+O-1's decisive test needs a monolithic thermal prediction pushed through COD's
+cascade. Rather than build a new class, `audit_port/scripts/07` calls
+`CODOperator._gas_integral(t, u, x0_gas, theta_grid)` with a `theta_grid` supplied
+from outside. That is legitimate because the method holds no `nn.Parameter` and
+reads nothing from `self` except registered physics buffers — the gradient test in
+script 08 proves it (0 of 28 parameter tensors receive gradient from a gas-only
+loss).
+
+The grid is broadcast to one row per query time, exactly as `forward` does with
+`_thermal_predict_grid`'s output, so the hybrid differs from COD in the thermal
+input alone. No second definition of the cascade was created.
+
+### J-32 Guard set to 0.9999 for every arm
+
+Gate 3's stored Mono Fair numbers came from n15's harness with right-edge guard
+`TW*0.999`; Gate 1's COD numbers came from n12's with `TW*0.9999`. DECISIONS
+compares them directly (13.41 vs 0.399 degC, 0.705 vs 0.593 ppm), which mixes the
+two harnesses.
+
+Scored everything at `0.9999` here so the arms are comparable. Mono Fair's C2H2
+figure is 0.7049 ppm under either guard, so the mixing was harmless in this
+instance — recorded so that it is checked rather than assumed.
+
+### J-33 A refuted hypothesis is kept in the report
+
+My first explanation for COD's C2H2 error floor was the dissipation linearisation
+in `_gas_integral` (L332), `- k_dis * x0_gas * t` instead of `- k_dis * c(t)`. I
+implemented the exact integrating-factor solution to test it. It moved the floor by
+2.35e-07 ppm — no measurable effect.
+
+Kept in `AMPLIFICATION_MECHANISM.md` §4 rather than deleted. A plausible mechanism
+that turns out not to be the cause is worth a paragraph, because the linearisation
+is real and someone will propose it again.
+
+### J-34 New finding: reference and model use different Arrhenius factors
+
+`fast_rhs_np` (the ground truth) computes `V_arr` **unbounded**; `fast_rhs_torch`
+and `CODOperator._gas_integral` both `.clamp(max=1e4)`. Above a per-gas temperature
+threshold the model's generation rate is capped while the truth's is not.
+
+| gas | theta_HS at which V_arr = 1e4 | grid points clamped | cases affected |
+|---|---|---|---|
+| `c_H2` | 245.3 degC | 0.00% | 0/100 |
+| `c_C2H2` | **187.2 degC** | 3.63% | 6/100 |
+| `c_C2H4` | 214.0 degC | 1.51% | 2/100 |
+| `c_CO` | 303.6 degC | 0.00% | 0/100 |
+| `c_CO2` | 356.7 degC | 0.00% | 0/100 |
+
+The test set reaches a maximum hot-spot of 236.9 degC (mean 123.0, p90 177.2), so
+C2H2's threshold is crossed and CO's is not. Removing the clamp collapses the C2H2
+floor from 0.591367 to 0.000040 ppm, a factor of 14,632.
+
+Consequence for the headline numbers: COD's C2H2 MAE of 0.5926 ppm is 6 artefact
+cases averaging 9.86 ppm diluted across 100; the other 94 average 0.0000 ppm. On
+the 94 clean cases COD's C2H2 error is 0.0007 ppm against Mono Fair's 0.1009 ppm —
+a factor of **141**, where the all-100 comparison shows 1.19.
+
+Audit §8.4 lists this clamp among those that can hide behaviour but does not note
+that the reference lacks it, and does not quantify it. Not fixed here: aligning the
+clamps changes both the model forward pass and the reference ODE, so it needs its
+own commit with its own before/after, and it invalidates the checkpoint again.
+Recorded in DECISIONS under "Bằng chứng mới cần xem xét" as N-1, because it
+partially contradicts an entry in "Bằng chứng đã xác lập".
+
+### J-35 What O-1 settles, and what it does not
+
+Settled: the monolithic gases are learned, not cascaded. Gradient test — COD 0 of
+28 parameter tensors receive gradient from a gas-only loss, both monoliths 100%.
+Static trace — all six monolithic outputs come from one `Linear(p, 6)` head, and
+`V_arr`, `k_gen`, `k_dis` appear nowhere in `monolithic.py`.
+
+Also settled: Arrhenius amplification of a 13.41 degC thermal error produces at
+most 0.63 ppm, not the ~20 ppm O-1 anticipated. The 1,000-35,000% figures in
+Section 7.1 are relative *rate* changes and are arithmetically correct; the error
+is quoting them as concentration errors.
+
+Not settled by this work: whether the monolithic baselines could be trained to
+succeed. Their `wm = 0.000` (audit B-1) and shadowed `ne = 12.0` (J-8) remain
+uncorrected in the stored checkpoints, so "monolithic fails" is still unestablished
+for three independent reasons.

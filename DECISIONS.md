@@ -102,11 +102,6 @@ Section 8 cũ biến mất. Table 7 rút xuống một đoạn Discussion.
 
 ## OPEN — đang chờ
 
-### O-1. Gas output của monolithic có đi qua Arrhenius quadrature không
-Brief đã soạn, chưa chạy. Đóng khi có `audit_port/AMPLIFICATION_MECHANISM.md`.
-
-θ_TO của Mono tệ hơn COD 33,6 lần (13,41 vs 0,399 °C) nhưng c_C2H2 chỉ tệ hơn 1,19 lần (0,705 vs 0,593 ppm). Nếu khuếch đại Arrhenius đang hoạt động thì 13,41 °C phải cho sai số khí cỡ 20 ppm. Nghi vấn: chuỗi khuếch đại mà Section 7.1 mô tả không tồn tại trong forward pass của baseline. Nếu đúng, Section 7.1 và Table 4 phải viết lại.
-
 ### O-2. Phân bố sai số tuyệt đối
 Bảng hiện dùng mean MAE với median denominator. Cần median, mean, p90, max, kèm case index của max. Ưu tiên thấp, gộp vào lúc thiết kế metric cho benchmark mới.
 
@@ -132,6 +127,24 @@ Audit xác nhận bias tồn tại (`|bias|_mean = 3,09 °C`) nhưng bác lời 
 **O-4. Rà soát literature về one-way coupling.** Đóng 2026-07-27. Xác nhận C-8, không có tuyên bố novelty nào đứng vững ở tầng phương pháp. Thu hoạch dùng được ghi ở mục Bằng chứng.
 
 **O-6. Ma trận baseline.** Đóng bởi C-11.
+
+**O-1. Gas output của monolithic KHÔNG đi qua Arrhenius quadrature.** Đóng
+2026-07-27 bởi `audit_port/AMPLIFICATION_MECHANISM.md`.
+
+Gas của monolithic là output mạng trực tiếp: cả sáu state ra từ một `Linear(p, 6)`
+duy nhất, và `V_arr`, `k_gen`, `k_dis` không xuất hiện trong `monolithic.py`. Kiểm
+chứng bằng gradient: loss chỉ trên gas làm 0/28 tensor tham số của COD nhận
+gradient, nhưng 30/30 của Mono Fair và 28/28 của Mono MH. Chuỗi khuếch đại mà
+Section 7.1 mô tả không tồn tại trong forward pass của baseline. Section 7.1 và
+Table 4 phải viết lại.
+
+Hai kết quả kèm theo. Một, đẩy θ_TO của Mono qua cascade của COD cho sai số khí
+**thấp hơn** output thật của Mono trên cả năm khí (1,12x đến 1,60x), tức cascade
+không khuếch đại thảm khốc. Hai, 13,41 °C qua cascade chỉ cho tối đa 0,63 ppm,
+không phải ~20 ppm như nghi vấn ban đầu; con số 1.000-35.000% là tỷ lệ thay đổi
+*tốc độ* V_arr, đúng về số học, sai khi trích như sai số nồng độ.
+
+Tiền đề "c_C2H2 chỉ tệ hơn 1,19 lần" của mục này là artifact, xem N-1.
 
 ---
 
@@ -161,4 +174,11 @@ Audit xác nhận bias tồn tại (`|bias|_mean = 3,09 °C`) nhưng bác lời 
 
 Ghi vào đây khi phát hiện điều mâu thuẫn với một mục CLOSED. Không tự ý mở lại mục đó.
 
-(trống)
+N-1. Reference ODE và model dùng hàm Arrhenius khác nhau. fast_rhs_np không
+chặn V_arr, fast_rhs_torch và _gas_integral clamp ở 1e4. C2H2 vượt ngưỡng tại
+theta_HS = 187,2 degC, test set chạm 236,9 degC (hệ quả trực tiếp của audit
+M-9). Bỏ clamp làm sàn C2H2 sụt từ 0,591367 xuống 0,000040 ppm. Ảnh hưởng 6
+trên 100 case. Sửa cái này lại vô hiệu checkpoint lần nữa.
+
+Hệ quả cho C-10 và các lập luận: tỷ số COD/Mono trên C2H2 là 141 lần trên 94
+case sạch, không phải 1,19 lần như bảng all-100 cho thấy. Con số 1,19 phải rút.
