@@ -73,23 +73,57 @@ Thực hành hiện nay của ngành là lấy nhiệt độ trung bình ngày r
 
 ### C-11. Ma trận baseline
 
-**Tầng 0, không học:**
-- LSODA ở dung sai khớp độ chính xác surrogate (chuẩn tốc độ công bằng, luôn ghi rõ rtol)
-- IEC 60076-7 giải tích thuần (sàn trung thực)
-- **Arrhenius tại nhiệt độ trung bình ngày** (thực hành hiện nay, đo trực tiếp khoảng cách Jensen, baseline quan trọng nhất và chưa từng có trong bản thảo)
+Quy mô đặt theo kỳ vọng Q1, không theo ngân sách compute. Compute giải quyết
+bằng chạy song song nhiều tài khoản Colab, cùng ghi kết quả về một thư mục
+Drive. Xem `scripts/colab_run.md`.
 
-**Tầng 1, mỗi kiến trúc hai cấu hình (monolithic và trong cascade), 3 seed:**
+**Điều kiện tiên quyết:** phải cache `true_fixed_point()` vào dataset trước.
+Fix 1 hiện làm mỗi epoch đắt 5,1 lần vì giải contraction trong vòng train,
+trong khi điểm bất động chỉ phụ thuộc (K, T_a) là input cố định của từng
+sample. Không cache thì ma trận này mất 160 giờ GPU thay vì 30.
+
+**Tầng 0, không học:**
+- LSODA ở dung sai khớp độ chính xác surrogate (chuẩn tốc độ công bằng, luôn
+  ghi rõ rtol; so với rtol=1e-8 là so với thứ chính xác hơn bảy bậc)
+- IEC 60076-7 giải tích thuần (sàn trung thực)
+- Arrhenius tại nhiệt độ trung bình ngày (thực hành hiện nay của ngành, đo
+  trực tiếp khoảng cách Jensen ở C-10; baseline quan trọng nhất và chưa từng
+  có trong bản thảo)
+
+**Tầng 1, neural operator, mỗi kiến trúc hai cấu hình (monolithic và trong
+cascade), 5 seed:**
 - PI-DeepONet Modified MLP (đã có code trong repo)
 - FNO (github.com/neuraloperator)
 - MIONet (github.com/lu-group/mionet)
+- S-DeepONet (github.com/Jasiuk-Research-Group/S-DeepONet)
 
-Sáu lần train × 3 seed = 18 run × 45 phút ≈ 14 giờ GPU. Kaggle cho 30 giờ mỗi tuần.
+4 kiến trúc × 2 cấu hình × 5 seed = 40 run. Cấu hình "trong cascade" nghĩa là
+kiến trúc đó chỉ dự đoán θ_TO, hạ nguồn tính bằng quadrature. Nếu
+FNO-monolithic hỏng còn FNO-in-cascade chạy tốt thì cascade là nguyên nhân,
+không phải kiến trúc. Đây là bằng chứng reviewer sẽ đòi.
 
-Cấu hình "trong cascade" nghĩa là kiến trúc đó chỉ dự đoán θ_TO, hạ nguồn tính bằng quadrature. Nếu FNO-monolithic hỏng còn FNO-in-cascade chạy tốt thì cascade là nguyên nhân, không phải kiến trúc.
+**Tầng 2, per-profile, cho lập luận amortization:**
+- PINN per-profile, 10 profile (thay thế PINN baseline không tồn tại ở §7.2)
+- RBA-PINN (Ramirez et al. 2025, EAAI 139:109556) tái hiện trên dữ liệu tổng
+  hợp. Đối thủ cùng miền gần nhất, cùng dùng nhiệt độ học được rồi suy lão
+  hóa. Reviewer chắc chắn hỏi tại sao không so. Dữ liệu thật của họ không
+  công khai, nêu rõ giới hạn.
 
-**Loại:** AMORE (C-7), Goswami (trùng vai trò với FNO và DeepONet), đại diện họ UDE (phương pháp của bài **là** một instance của UDE, benchmark với UDE là benchmark với chính mình; trích dẫn làm framework), Zanardi (không có code, phân rã theo timescale không áp dụng).
+**Tầng 3, chuỗi thời gian thuần dữ liệu:**
+- LSTM hoặc GRU. Thứ một kỹ sư sẽ thử đầu tiên; không có nó thì bài thiếu
+  điểm quy chiếu thực dụng.
 
-**Stretch nếu còn thời gian:** RBA-PINN (Ramirez et al. 2025, EAAI 139:109556) tái hiện trên dữ liệu tổng hợp, phục vụ lập luận amortization.
+**Giao thức công bằng:** ngân sách theo wall-clock, không theo epoch (audit
+B-1: cùng 25.000 epoch nhưng thời gian chạy chênh 4,6 lần). Mỗi baseline được
+một đợt tìm siêu tham số bằng ngân sách của phương pháp chính, và đợt tìm đó
+phải báo cáo. Trích Lu et al. 2022 (CMAME 393:114778, 16 benchmark, FAIR) làm
+khung. Model không hội tụ báo cáo là không hội tụ kèm learning curve, không
+quy thành con số hiệu năng.
+
+**Loại:** AMORE (C-7), Goswami (trùng vai trò với FNO và DeepONet), đại diện
+họ UDE (phương pháp của bài là một instance của UDE, benchmark với UDE là
+benchmark với chính mình; trích dẫn làm framework), Zanardi (không có code,
+phân rã theo timescale không áp dụng).
 
 ### C-12. Chỉ máy biến áp, bỏ hoàn toàn case study pin
 Lý do: không thiết kế CHI cho pin nên phần pin không tham gia được nửa sau của bài (Cobb-Douglas, bốn tiên đề, Proposition 2, Appendix B, Katser validation), thành mục hụt hơi; bỏ bớt baseline gây bất đối xứng mời reviewer đặt câu hỏi; bài đã 30 trang một cột.

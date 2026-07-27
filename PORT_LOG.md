@@ -626,3 +626,88 @@ Not settled by this work: whether the monolithic baselines could be trained to
 succeed. Their `wm = 0.000` (audit B-1) and shadowed `ne = 12.0` (J-8) remain
 uncorrected in the stored checkpoints, so "monolithic fails" is still unestablished
 for three independent reasons.
+
+---
+
+## O-8 — the Jensen gap
+
+### J-36 `daily_mean.py` separates the baseline from the measurement
+
+Two things that get conflated, kept apart deliberately:
+
+* `DailyMeanArrhenius` — a Tier 0 baseline (C-11). IEC 60076-7 thermal trajectory,
+  then one frozen Arrhenius factor at the window-mean hot-spot for all five gases
+  and DP. No parameters, so no seed and no convergence criterion.
+* `jensen_gap_from_trajectory` — a pure measurement on a supplied trajectory.
+
+O-8 asks for the gap, so the reported numbers all come from the second, fed the
+**true** hot-spot trajectory from RK45. They therefore contain no model error of
+any kind: the gap is a property of the reference physics and the test
+distribution.
+
+### J-37 The baseline uses the corrected steady state, deliberately
+
+`DailyMeanArrhenius.theta_TO_trajectory` calls `true_fixed_point_np`, not formula A
+or C. Giving the practitioner baseline the *worse* steady state would have made it
+easy to beat for a reason that has nothing to do with the Jensen gap. The only
+thing this baseline does differently from the reference is freeze Arrhenius at the
+mean temperature, which is what makes the comparison a measurement of convexity
+rather than a straw man.
+
+It also uses the closed-form recurrence for a piecewise-linear driving term rather
+than trapezoid quadrature of `theta_ss * exp(s/tau)`, because that integrand grows
+by `exp(T/tau)` and the trapezoid form is what forced the battery model to switch
+to a recurrence (n15 cell 7). At TW/tau = 4.8 the trapezoid would have been
+adequate, but there is no reason to inherit a known weakness.
+
+### J-38 The implementation reproduces C-10's analytical table to rounding
+
+`jensen_gap_sinusoidal` computes the gap by quadrature over one full period, with
+activation energies derived from the code's own `B_aging` and `E_act` rather than
+transcribed. Maximum disagreement with C-10 over all six states and four
+amplitudes: **0.0048**. The two figures the paper leads with come out at DP
+**1.701** (C-10 says 1.70) and C2H2 **2.594** (2.59) at +-15 degC.
+
+Also confirms the Ea column: H2 112.2, C2H2 174.6, C2H4 137.2, CO 87.3, CO2 74.8,
+DP 124.7 kJ/mol, all from `E_act * B_aging * R`.
+
+### J-39 The measured gap tracks the analytical prediction at every swing band
+
+| swing degC | n | DP measured | DP analytical | C2H2 measured | C2H2 analytical |
+|---|---|---|---|---|---|
+| 0-2 | 5 | 1.004 | 1.007 | 1.008 | 1.014 |
+| 2-5 | 9 | 1.023 | 1.036 | 1.046 | 1.071 |
+| 5-10 | 5 | 1.078 | 1.138 | 1.157 | 1.284 |
+| 10-15 | 13 | 1.418 | 1.472 | 1.994 | 2.033 |
+| 15-25 | 28 | 2.506 | 2.598 | 5.527 | 5.127 |
+| >25 | 40 | 5.321 | 5.070 | 18.740 | 14.190 |
+
+Monotone in swing, as convexity requires, and the ordering across states follows
+activation energy exactly: CO2 < CO < H2 < DP < C2H4 < C2H2. The agreement at
+10-15 degC — where a real transformer sits — is the line that matters.
+
+### J-40 The all-100 mean must not be quoted as the operational gap
+
+The realised swing on the seed-999 test set has a median of 21.44 degC and 40 of
+100 cases exceed 25 degC. That is not daily transformer behaviour; it is the IC
+sampler. Audit M-9: `sample_consistent_ic` draws theta_TO(0) uniformly +-30 degC
+around the steady state and clips to `[theta_a + 5, 150]` **independently of the
+load**, so most cases start far from equilibrium and relax across the window.
+
+So the all-100 means (DP 3.211, C2H2 9.505) are the gap on a synthetic
+distribution with an inflated swing, not an operational claim. Flagged
+prominently in `JENSEN_GAP.md` §3 because it cuts *against* the paper's interest:
+the defensible headline stays C-10's 1.70 and 2.59, and the temptation to quote
+3.2 and 9.5 instead should be resisted.
+
+Consequence for the plan: the T1/T2/T3 tiers being frozen under SKELETON step 8
+should include a realistic swing distribution, or the Jensen results will be
+reported on a distribution nobody operates in.
+
+### J-41 The window is 12 h, so "daily mean" is the window mean
+
+C-4 fixes the forecast window at 12 h. For a trajectory averaged over a whole
+number of periods the ratio is unaffected, which holds for the time-varying test
+profiles (period = TW). It would not hold for a genuine 24 h profile observed over
+12 h, and a real deployment averages over 24 h. Parametrised rather than
+hard-coded, and stated in the report.

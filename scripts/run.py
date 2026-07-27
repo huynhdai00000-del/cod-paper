@@ -123,11 +123,21 @@ def main() -> int:
                     help="Expected distribution hash; fails if it has changed.")
     ap.add_argument("--max-epochs", type=int, default=None,
                     help="Override the config's epoch ceiling (smoke tests).")
+    ap.add_argument("--max-wall-seconds", type=float, default=None,
+                    help="Override the config's wall-clock ceiling. Equal wall "
+                         "clock, not equal epochs, is the fair budget when two "
+                         "models differ in cost per step (audit B-1).")
     ap.add_argument("--n-ic", type=int, default=None,
                     help="Override the config's n_ic (smoke tests).")
     ap.add_argument("--n-test", type=int, default=None,
                     help="Override the number of evaluation cases.")
     ap.add_argument("--device", default=None, choices=["cpu", "cuda"])
+    ap.add_argument("--tag", default=None,
+                    help="Suffix for the output directory, to keep runs apart.")
+    ap.add_argument("--theta-ss", default=None,
+                    choices=["true_fixed_point", "formula_C"],
+                    help="Override the model's analytic attractor. Used to run the "
+                         "v57-physics control against the corrected physics.")
     ap.add_argument("--train-data", default=None,
                     help="Path to a stored .npz. Required to reproduce a "
                          "checkpoint; omit to generate from the config.")
@@ -155,7 +165,8 @@ def main() -> int:
     smoke = args.max_epochs is not None or args.n_ic is not None
     out_dir = (Path(args.out) / f"{cfg['experiment']['name']}_"
                f"{cfg['experiment']['variant']}_s{seed}_{cfg.hash}"
-               f"{'_smoke' if smoke else ''}")
+               f"{'_smoke' if smoke else ''}"
+               f"{('_' + args.tag) if args.tag else ''}")
 
     print(f"[run] config          {args.config}")
     print(f"[run] config hash     {cfg.hash}")
@@ -193,6 +204,9 @@ def main() -> int:
               f"randomise_phase={randomise_phase}, clip_step={clip_step})")
 
     # ── Model ──────────────────────────────────────────────────────────────
+    if args.theta_ss is not None:
+        cfg.raw["model"]["steady_state"] = args.theta_ss
+        print(f"[model] attractor OVERRIDDEN to {args.theta_ss}")
     model, predict_fn = build_model(cfg, ts.x_mean, ts.x_std, device)
     model = model.to(device)
     print(f"[model] {cfg['model']['kind']}  {model.n_parameters():,} parameters")
@@ -201,6 +215,8 @@ def main() -> int:
     trainer, loop = build_trainer(cfg, model, predict_fn, ts, device, max_epochs)
     crit_cfg = dict(cfg["training"]["convergence"])
     crit_cfg["max_epochs"] = max_epochs
+    if args.max_wall_seconds is not None:
+        crit_cfg["max_wall_seconds"] = args.max_wall_seconds
     crit = ConvergenceCriterion(**crit_cfg)
     print(f"[train] loop={loop}  criterion={crit}")
     outcome = train(trainer, crit, log_every=max(1, max_epochs // 5))
@@ -255,6 +271,8 @@ def main() -> int:
         "model_parameters": model.n_parameters(),
         "n_ic": len(ts),
         "device": str(device),
+        "theta_ss_mode": cfg["model"].get("steady_state", "true_fixed_point"),
+        "wall_clock_overridden": args.max_wall_seconds is not None,
         "convergence_criterion": crit.__dict__,
         "outcome": outcome.to_dict(),
         "fair_comparison_candidate": outcome.is_fair_comparison_candidate(),
