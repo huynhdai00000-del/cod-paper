@@ -71,6 +71,19 @@ Thực hành hiện nay của ngành là lấy nhiệt độ trung bình ngày r
 
 Đây là gap kỹ thuật mà bài lấp. Thay hoàn toàn framing cũ "monolithic thất bại hai bậc độ lớn", vốn đã bị bác bởi bằng chứng đơn vị vật lý.
 
+**Kiểm chứng thực nghiệm (2026-07-27).** Trên phân phối hiện thực mới (biên độ
+trung vị 11,20 °C), khoảng cách đo được là DP 1,39 và C2H2 1,83, khớp với nội
+suy từ bảng giải tích tại 11,2 °C (1,39 và 1,85). Đường cong giải tích dự đoán
+đúng đo đạc.
+
+Hệ quả cho cách trình bày: sản phẩm là **đường cong theo biên độ**, không phải
+một con số. Vẽ đường cong kèm phân phối biên độ thực tế chồng lên. Nhóm máy
+bài nhắm tới (tải biến động do năng lượng tái tạo) nằm ở dải 15-20 °C, nơi
+khoảng cách là 1,70 đến 2,37 trên DP.
+
+Không trích con số từ phân phối cũ (DP 2,31; C2H2 4,76 trên trung vị) vì đó là
+artifact của bộ lấy mẫu IC.
+
 ### C-11. Ma trận baseline
 
 Quy mô đặt theo kỳ vọng Q1, không theo ngân sách compute. Compute giải quyết
@@ -172,6 +185,12 @@ Triển khai `cod/models/daily_mean.py` và đo tỷ số giữa tích phân tr�
 ### O-9. Bias −3 °C chưa có lời giải thích
 Audit xác nhận bias tồn tại (`|bias|_mean = 3,09 °C`) nhưng bác lời giải thích trong bài (cấu trúc bậc thang ETC tại K = 1: hai công thức trùng nhau chính xác tại K = 1). Ở cửa sổ đơn thì 3 °C nhỏ, nhưng qua rollout với độ nhạy 10,8 %/K thì bias hệ thống này làm sai tốc độ lão hóa khoảng 30 phần trăm. Cần chẩn đoán thật trước khi công bố bất kỳ con số end-of-life nào.
 
+**O-10 (mới). Hiệu chuẩn phân phối tải theo ETT.** RealisticParams cần dao
+động tải ngày ±12-28% để đạt biên độ nhiệt 10-15 °C, ở mức trên của feeder
+thực tế. ETT có gần hai năm tải thật theo giờ; lấy phân phối biên độ dao động
+ngày từ đó để kiểm chứng. Không cần tham số nameplate hay nhiệt độ môi trường
+cho việc này.
+
 ---
 
 ## Đã đóng
@@ -249,3 +268,15 @@ trên toàn bộ 100 case (DP 3,211; C2H2 9,505) là artifact, không phải tuy
 vận hành. Ở dải hiện thực ±10-15 °C, đo được DP 1,418 và C2H2 1,994. **Con số
 công bố phải là bảng giải tích C-10 (1,70 và 2,59)**, không phải trung bình
 thực nghiệm trên phân phối cũ. Phân phối mới phải sửa bộ lấy mẫu IC.
+
+**N-4. Khoảng cách Jensen chỉ tồn tại khi tải biến động.** Với IC nhất quán,
+case constant-K cho biên độ 0,00 °C, tức khoảng cách bằng 1,00 theo định nghĩa.
+Máy chạy nền phẳng không có gì để khai thác bằng bất kỳ phương pháp nào. Đây
+là tuyên bố phạm vi, khớp với framing mở bài về tải biến động do năng lượng
+tái tạo. Hệ quả: tỷ lệ CK/TV 50/50 trong test set phải thiết kế lại cho phần
+Jensen.
+
+**N-5. Ngưỡng vượt IEC dư lại gần như toàn bộ là H2.** c_eq(H2) = 76 ppm ở
+hot-spot 110 °C so với ngưỡng 100 ppm, trong khi hiện trường máy khỏe nằm ở
+5-50 ppm. Không phải lỗi sampler mà là lỗi tham số. O-3 chuyển từ vấn đề trích
+dẫn thành vấn đề hiệu chuẩn.
