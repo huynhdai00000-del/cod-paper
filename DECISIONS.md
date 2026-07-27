@@ -132,6 +132,24 @@ Giữ lập luận tổng quát trong Discussion bằng công thức độ nhạ
 
 Section 8 cũ biến mất. Table 7 rút xuống một đoạn Discussion.
 
+**O-1. Cơ chế khuếch đại.** Đóng 2026-07-27. Gas output của monolithic là
+output trực tiếp của mạng, xác nhận ba cách: trace tĩnh, gradient test (0/28
+tensor của COD nhận gradient từ loss khí, 30/30 của Mono Fair), và phép thử
+lai. Đẩy θ_TO của monolithic qua cascade của COD cho sai số khí **thấp hơn**
+chính đầu ra của nó, 1,12 đến 1,60 lần, trên mọi khí. Nếu cascade khuếch đại
+thì bản lai phải tệ hơn.
+
+13,41 °C qua cascade thật chỉ cho tối đa 0,63 ppm. Các con số 1.000 đến
+35.000% ở Section 7.1 là **thay đổi tương đối của tốc độ V_arr**, đúng số học
+nhưng sai đại lượng khi trích như sai số nồng độ. Section 7.1 và Table 4 phải
+viết lại hoàn toàn.
+
+**O-8. Khoảng cách Jensen thực nghiệm.** Đóng 2026-07-27. `daily_mean.py` tái
+hiện bảng C-10 sai lệch tối đa 0,0048 từ chính hằng số trong code (DP 1,701 so
+với 1,70; C2H2 2,594 so với 2,59). Đo trên quỹ đạo thật, khoảng cách bám theo
+dự đoán giải tích ở mọi dải biên độ, đơn điệu theo biên độ, xếp thứ tự theo
+năng lượng hoạt hóa.
+
 ---
 
 ## OPEN — đang chờ
@@ -216,3 +234,18 @@ trên 100 case. Sửa cái này lại vô hiệu checkpoint lần nữa.
 
 Hệ quả cho C-10 và các lập luận: tỷ số COD/Mono trên C2H2 là 141 lần trên 94
 case sạch, không phải 1,19 lần như bảng all-100 cho thấy. Con số 1,19 phải rút.
+
+**N-2. Cache true_fixed_point.** Chi phí fix 1 từ 5,1× xuống 1,48×. Hai chỗ
+dùng đắt nhất nằm trên sensor grid và không mang gradient, nên tính một lần
+lúc sinh dataset. Thêm một tiết kiệm chính xác: `_thermal_predict_grid` trước
+giải trên tensor (B*ns, ns), nay giải (B, ns) rồi expand. Bit-identical, ba
+gate pass, `JENSEN_GAP.md` không đổi. Phần dư 1,48× là θ_ss tại query time,
+gỡ được bằng implicit differentiation nhưng đã quyết không làm.
+
+**N-3. Test set hiện tại không hiện thực về mặt vận hành.** Biên độ dao động
+hot-spot trung vị 21,4 °C, 40/100 case trên 25 °C, do `sample_consistent_ic`
+rút θ_TO(0) độc lập với profile tải (audit M-9). Hệ quả: trung bình Jensen
+trên toàn bộ 100 case (DP 3,211; C2H2 9,505) là artifact, không phải tuyên bố
+vận hành. Ở dải hiện thực ±10-15 °C, đo được DP 1,418 và C2H2 1,994. **Con số
+công bố phải là bảng giải tích C-10 (1,70 và 2,59)**, không phải trung bình
+thực nghiệm trên phân phối cũ. Phân phối mới phải sửa bộ lấy mẫu IC.

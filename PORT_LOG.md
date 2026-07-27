@@ -813,3 +813,116 @@ work needed to make it cheap now done.
 fit stops cleanly and records `stop_reason='wall_clock_budget'` rather than being
 silently shortened), `--tag`, and `--theta-ss` (to run the v57-physics control
 against the corrected physics without editing a config).
+
+---
+
+## An operationally realistic distribution
+
+### J-47 The IC fix alone gives a bimodal distribution, not a centred one
+
+Before writing the sampler I decomposed the seed-999 swing into what the IC causes
+and what the profile causes
+(`audit_port/scripts/12_swing_decomposition.py`). Split by case type:
+
+| hot-spot swing degC | constant K | time-varying |
+|---|---|---|
+| as drawn | 14.48 | 28.95 |
+| with a profile-consistent IC | **0.00** | 20.26 |
+| the theta_ss forcing alone | 0.00 | 21.26 |
+
+Constant load with a consistent IC means constant forcing, so the trajectory never
+moves and the swing is exactly zero. The time-varying cases stay at 20 degC because
+their own forcing is 21 degC. So a consistent IC alone produces a distribution
+piled at 0 and 20, not one centred at 10-15.
+
+That is why `realistic.py` contains a profile generator as well as the IC sampler
+that was asked for. Reported rather than done quietly, because it changes what the
+deliverable is.
+
+### J-48 Load is solved for, not drawn
+
+The old sampler draws `K` and `theta_a` independently, which is what allows a
+150 degC initial condition and a hot-spot past 187 degC. A utility does the
+opposite: it loads a transformer to keep it in temperature band.
+
+So `make_realistic_profile` draws the intended mean hot-spot — `N(86, 11)` clipped
+to [62, 122] degC, against IEC 60076-7's 98 degC rated and 120 degC normal-cyclic
+ceiling — and `solve_K_for_hot_spot` bisects for the load factor achieving it at
+that site's ambient. `steady_hot_spot` is strictly increasing in K, so bisection
+needs no derivative and cannot miss.
+
+This is what fixes the gas ICs, and the mechanism is worth stating: `c_eq` is
+exponential in temperature, so the 37% IEC exceedance was never a gas-model problem.
+It was the 150 degC initial conditions. Exceedance falls to **12.2%** (n = 2000)
+without touching `k_gen`, `k_dis` or the service factor.
+
+### J-49 The residual H2 exceedance is left visible on purpose
+
+12.2% of realistic ICs still exceed an IEC attention level, and essentially all of
+it is H2 (12.25%, against 3.6% or less for every other gas).
+
+The cause is the kinetics, not the sampler: `c_eq(H2) = k_gen/k_dis * V_arr` is
+**76 ppm at a 110 degC hot-spot** against an attention level of 100 ppm. A
+transformer in long-run equilibrium at the IEEE reference temperature therefore
+sits at 76% of the H2 attention level, and anything slightly hotter exceeds it.
+Field practice puts a healthy unit at 5-50 ppm.
+
+I could have hidden this by lowering `hot_spot_mean` a few degrees. Deliberately did
+not: it is direct evidence for O-3 (the kinetic constants have no stated source),
+and tuning a sampler to conceal a parameter problem is how the original results got
+into trouble.
+
+### J-50 Calibrated to the target, and the tension that exposes
+
+Reaching a 10-15 degC hot-spot swing needs a daily load swing of **+-12-28%**,
+which is at the upper end of what a real feeder does, plus a 6-16 degC peak-to-peak
+ambient cycle. That is stated in `RealisticParams` rather than buried.
+
+The honest reading is that the Jensen gap matters for **cycled** units. A genuinely
+base-loaded transformer has almost no swing, hence almost no gap, and no method can
+beat a mean-temperature calculation on it. That belongs in the paper as a scope
+statement, not as a caveat discovered by a reviewer.
+
+Realised: median swing 21.44 -> **11.20** degC, share above 25 degC 40% -> 9%,
+share in the 8-18 band 23% -> 40%.
+
+### J-51 Report medians, because the mean is a statement about the tail
+
+The Jensen gap is exponential in swing, so for the high-activation-energy states a
+few large-swing cases dominate any mean. On the realistic distribution C2H2's mean
+gap is 9.6 while its median is 1.83.
+
+Medians, against C-10's analytical values at the +-15 degC reference:
+
+| state | old median | realistic median | C-10 at +-15 |
+|---|---|---|---|
+| `c_H2` | 2.016 | 1.302 | 1.550 |
+| `c_C2H2` | 4.759 | 1.832 | 2.594 |
+| `c_C2H4` | 2.718 | 1.477 | 1.877 |
+| `c_CO` | 1.570 | 1.168 | 1.313 |
+| `c_CO2` | 1.405 | 1.119 | 1.223 |
+| `DP` | 2.308 | 1.386 | 1.701 |
+
+The realistic medians sit just **below** C-10's reference, which is what a median
+swing of 11.2 degC should give against a reference of +-15. Stratified by swing
+band the two distributions give the same gap at the same swing — the old set was
+not producing different physics, it was sampling a different place on the same
+curve.
+
+Quoting the old set's medians would have overstated the gap by 67% on DP and 160%
+on C2H2.
+
+### J-52 Two IEC baselines exist and they are not the same number
+
+Audit M-9's 37.0% is the **8000-IC training set**. The seed-999 evaluation set of
+100 ICs from the same sampler gives 45%. Both are reported in
+`REALISTIC_DISTRIBUTION.md` §4 with the sample stated, and the headline comparison
+uses the training-set figure against a 2000-sample estimate for the new sampler, so
+neither side is a 100-draw fluctuation.
+
+### J-53 Nothing is frozen
+
+No hash recorded, no `DISTRIBUTION_FREEZE.md` entry, no test tiers. `RealisticParams`
+holds every knob as a dataclass field so the calibration can be argued with. T2
+(parameter extrapolation) and T3 (out-of-family) still need designing on top of this,
+and the freeze has to happen before the first model is trained against it, not after.
