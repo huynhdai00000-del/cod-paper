@@ -111,7 +111,9 @@ def build_trainer(cfg, model, predict_fn, ts, device, max_epochs):
         causal_schedule_shared=bool(cw.get("schedule_shared", True)),
     )
     if loop == "train_v34":
-        return CODTrainer(model, **kwargs), loop
+        # Cached theta_ss on the sensor grid, so fix 1's contraction solve runs once
+        # per sample at dataset time instead of every forward pass.
+        return CODTrainer(model, theta_ss=ts.ensure_theta_ss(), **kwargs), loop
     return SharedPhysicsTrainer(model, predict_fn, **kwargs), loop
 
 

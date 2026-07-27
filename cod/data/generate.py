@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import torch
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d as sci_interp1d
 
@@ -36,8 +37,33 @@ from cod.data.physics import (
     fast_rhs_np,
 )
 from cod.data.profiles import N_IC, make_sensor_profile, sample_consistent_ic
+from cod.data.steady_state import true_fixed_point_torch
 
 TRAIN_FILE = "transformer_training_v57.npz"
+
+
+def steady_state_on_grid(sensors: np.ndarray,
+                         n_sensors: int = N_SENSORS) -> np.ndarray:
+    """theta_ss on the sensor grid for every profile, (N, n_sensors), float32.
+
+    Phase 2 fix 1 replaced a closed-form formula with a contraction solve, which
+    made a training epoch 5.1x more expensive. The fixed point depends only on
+    (K, theta_a) — fixed inputs per sample — so it is solved once here and stored
+    with the dataset instead of being re-solved every forward pass.
+
+    Computed with `true_fixed_point_torch` in float32, the same function and dtype
+    the model uses, so the cached values are bit-identical to what the model would
+    have computed. `audit_port/scripts/11_check_ss_cache.py` asserts that.
+
+    Safe to cache because these grid values carry no gradient: they reach the output
+    only through `F_cum` in `_ode_baseline` and through `dm`/`dr` in
+    `build_trunk_feats`, none of which is differentiated. The query-time theta_ss,
+    which does need a t-gradient, is still solved live.
+    """
+    K = torch.tensor(sensors[:, :n_sensors], dtype=torch.float32)
+    Ta = torch.tensor(sensors[:, n_sensors:2 * n_sensors], dtype=torch.float32)
+    with torch.no_grad():
+        return true_fixed_point_torch(K, Ta).numpy().astype(np.float32)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -80,9 +106,16 @@ class TrainingSet:
     sensors: np.ndarray    # (N, 200) = [K(100), Ta(100)]
     x_mean: np.ndarray     # (6,)
     x_std: np.ndarray      # (6,)
+    theta_ss: np.ndarray | None = None   # (N, 100) cached steady state
 
     def __len__(self) -> int:
         return len(self.x0s)
+
+    def ensure_theta_ss(self) -> np.ndarray:
+        """Cached theta_ss on the sensor grid, computing it once if absent."""
+        if self.theta_ss is None:
+            self.theta_ss = steady_state_on_grid(self.sensors)
+        return self.theta_ss
 
 
 def generate_training_set(n_ic: int = N_IC, seed: int = 42,
@@ -109,7 +142,8 @@ def generate_training_set(n_ic: int = N_IC, seed: int = 42,
     ])
     x_mean = x0s.mean(axis=0)
     x_std = x0s.std(axis=0) + 1e-8
-    return TrainingSet(x0s=x0s, sensors=sensors, x_mean=x_mean, x_std=x_std)
+    return TrainingSet(x0s=x0s, sensors=sensors, x_mean=x_mean, x_std=x_std,
+                       theta_ss=steady_state_on_grid(sensors))
 
 
 def load_training_set(path: str | Path) -> TrainingSet:
@@ -121,7 +155,8 @@ def load_training_set(path: str | Path) -> TrainingSet:
     """
     d = np.load(path)
     return TrainingSet(x0s=d["x0s"], sensors=d["sensors"],
-                       x_mean=d["x_mean"], x_std=d["x_std"])
+                       x_mean=d["x_mean"], x_std=d["x_std"],
+                       theta_ss=(d["theta_ss"] if "theta_ss" in d.files else None))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -193,8 +228,15 @@ def solve_test_set(cases: list[TestCase], n_eval: int = 50, T: float = TW,
     return out
 
 
+def save_training_set(ts: TrainingSet, path: str | Path) -> None:
+    """Persist a generated dataset, cache included."""
+    np.savez(path, x0s=ts.x0s, sensors=ts.sensors, x_mean=ts.x_mean,
+             x_std=ts.x_std, theta_ss=ts.ensure_theta_ss())
+
+
 __all__ = [
-    "TRAIN_FILE", "TrainingSet", "TestCase",
+    "TRAIN_FILE", "TrainingSet", "TestCase", "steady_state_on_grid",
+    "save_training_set",
     "rk45_ground_truth", "generate_training_set", "load_training_set",
     "build_test_set", "solve_test_set",
 ]

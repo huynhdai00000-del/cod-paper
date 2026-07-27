@@ -196,7 +196,7 @@ class CODOperator(nn.Module):
         Rf = (1.0 + ac * (th_HS0 - Tr)).clamp(0.8, 1.5)
         return Ta_t + Do * ((1.0 + K_t ** 2 * R * Rf) / (1.0 + R)) ** ne
 
-    def _ode_baseline(self, x0_TO, u_sensors, t):
+    def _ode_baseline(self, x0_TO, u_sensors, t, theta_ss_grid=None):
         """Exact first-order ODE solution by trapezoid on the sensor grid.
 
         theta(t) = x0 * exp(-t/tau) + exp(-t/tau) * integral_0^t theta_ss(s) exp(s/tau)/tau ds
@@ -212,7 +212,11 @@ class CODOperator(nn.Module):
         tau = self.tau_oil_buf
         t_sq = t.squeeze(-1)
         s_grid = torch.linspace(0.0, self.T, ns, device=x0_TO.device)
-        theta_ss_s = self._theta_ss(u_sensors[:, :ns], u_sensors[:, ns:2 * ns])
+        # theta_ss on the sensor grid needs no gradient: it reaches the output only
+        # through F_cum, and the t-gradient flows through `frac` and `decay`, not
+        # through these values. So it is safe to read from a cache.
+        theta_ss_s = (theta_ss_grid if theta_ss_grid is not None
+                      else self._theta_ss(u_sensors[:, :ns], u_sensors[:, ns:2 * ns]))
         exp_s = torch.exp(s_grid / tau)
         integrand = theta_ss_s * exp_s.unsqueeze(0) / tau
         ds = self.T / (ns - 1)
@@ -227,13 +231,14 @@ class CODOperator(nn.Module):
         decay = torch.exp(-t_sq / tau)
         return (x0_TO.squeeze(-1) * decay + decay * F_t).unsqueeze(-1)
 
-    def _thermal_trunk_feat(self, t, u_sensors, x0_TO):
+    def _thermal_trunk_feat(self, t, u_sensors, x0_TO, theta_ss_grid=None):
         return build_trunk_feats(
             t, u_sensors, x0_TO, self.T, u_sensors.shape[-1] // 2,
             self.exp_decay_rates, self.tau_oil_buf, self.R_load_buf,
             self.n_exp_buf, self.m_exp_buf, self.DTheta_oil_R_buf,
             self.DTheta_HS_R_buf, self.alpha_Cu_buf, self.T_HS_ref_C_buf,
             theta_ss_mode=self.theta_ss_mode,      # PHASE 2 FIX 1
+            theta_ss_grid=theta_ss_grid,
         )
 
     def _interp_grid_5d(self, F_grid, t):
@@ -247,7 +252,8 @@ class CODOperator(nn.Module):
         F_hi = torch.gather(F_grid, 1, idx3 + 1).squeeze(1)
         return F_lo + frac.unsqueeze(1) * (F_hi - F_lo)
 
-    def _thermal_predict_grid(self, x0_TO, u_sensors, b_th, n_grid=None):
+    def _thermal_predict_grid(self, x0_TO, u_sensors, b_th, n_grid=None,
+                              theta_ss_grid=None):
         """theta_TO on a uniform grid, to drive the gas quadrature.
 
         `n_grid=20` while training gives 5x fewer trunk evaluations for a ~3-4x
@@ -273,16 +279,25 @@ class CODOperator(nn.Module):
             K_sub = K_full[:, idx_s] * (1 - frac_s) + K_full[:, idx_s + 1] * frac_s
             Ta_sub = Ta_full[:, idx_s] * (1 - frac_s) + Ta_full[:, idx_s + 1] * frac_s
             u_sub = torch.cat([K_sub, Ta_sub], dim=1)
+            ss_sub = None            # subsampled K, so the cache does not apply
         else:
             u_sub = u_sensors
+            ss_sub = theta_ss_grid
+
+        # Solve theta_ss on the (B, ns) sub-grid ONCE and expand, instead of on the
+        # (B*ns, ns) expanded tensor. Expanding identical values is exact, so this
+        # is a pure ns-fold saving with no numerical change.
+        if ss_sub is None:
+            ss_sub = self._theta_ss(u_sub[:, :ns], u_sub[:, ns:2 * ns])
 
         s_e = u_sub.unsqueeze(1).expand(B, ns, -1).reshape(B * ns, -1)
+        ss_e = ss_sub.unsqueeze(1).expand(B, ns, -1).reshape(B * ns, -1)
         b_e = b_th.unsqueeze(1).expand(B, ns, -1).reshape(B * ns, -1)
-        th_feat = self._thermal_trunk_feat(s_BN, s_e, x0e)
+        th_feat = self._thermal_trunk_feat(s_BN, s_e, x0e, theta_ss_grid=ss_e)
         tr_th = self.trunk_th(th_feat)
         delta = (b_e * tr_th).sum(-1) + self.bias_th.squeeze()
         delta = delta.reshape(B, ns)
-        baseline = self._ode_baseline(x0e, s_e, s_BN).reshape(B, ns)
+        baseline = self._ode_baseline(x0e, s_e, s_BN, theta_ss_grid=ss_e).reshape(B, ns)
         t_exp = (1.0 - torch.exp(-s_grid / tau)) / norm
         return baseline + t_exp.unsqueeze(0) * self.output_scale * delta
 
@@ -331,25 +346,34 @@ class CODOperator(nn.Module):
         F_t = self._interp_grid_5d(F_grid, t)
         return x0_gas + F_t - self.k_dis_buf * x0_gas * t
 
-    def forward(self, x0, u_sensors, t):
+    def forward(self, x0, u_sensors, t, theta_ss_grid=None):
+        """`theta_ss_grid`, if given, is theta_ss on the sensor grid, (B, n_sensors).
+
+        Supplying it skips the contraction solve that Phase 2 fix 1 introduced.
+        Bit-exact — see `_ode_baseline` and `build_trunk_feats` for why those uses
+        need no gradient. Omit it and the model computes everything itself.
+        """
         B = x0.shape[0]
         x0_TO = x0[:, 0:1]
         x0_gas = x0[:, 1:]
         b_th = self.branch_th(torch.cat([self._norm_TO(x0_TO), u_sensors], dim=-1))
-        th_feat = self._thermal_trunk_feat(t, u_sensors, x0_TO)
+        th_feat = self._thermal_trunk_feat(t, u_sensors, x0_TO,
+                                           theta_ss_grid=theta_ss_grid)
         tr_th = self.trunk_th(th_feat)
         delta_TO = (b_th * tr_th).sum(dim=-1, keepdim=True) + self.bias_th
         tau = self.tau_oil_buf
         norm = 1.0 - torch.exp(-self.T / tau)
         t_exp = (1.0 - torch.exp(-t / tau)) / norm
-        baseline = self._ode_baseline(x0_TO, u_sensors, t)
+        baseline = self._ode_baseline(x0_TO, u_sensors, t,
+                                     theta_ss_grid=theta_ss_grid)
         theta_TO_pred = baseline + t_exp * self.output_scale * delta_TO
 
         # INTENDED: the cascade is one-way. Detaching here is what makes
         # d L_gas / d theta exactly zero. Do not remove — see the class docstring
         # and reference/audit/results/step4_gradient_flow.md.
         theta_TO_grid = self._thermal_predict_grid(
-            x0_TO, u_sensors, b_th, n_grid=20 if self.training else None).detach()
+            x0_TO, u_sensors, b_th, n_grid=20 if self.training else None,
+            theta_ss_grid=theta_ss_grid).detach()
 
         gases_pred = self._gas_integral(t, u_sensors, x0_gas, theta_TO_grid)
         return torch.cat([theta_TO_pred, gases_pred], dim=-1)
@@ -372,10 +396,24 @@ class CODNoBaseline(CODOperator):
         return x0
 
 
-def cod_predict(model, x0, u, t):
+def cod_predict(model, x0, u, t, theta_ss_grid=None):
     """Uniform predict signature, so the sweep and the gates treat all models
-    the same way (n15 cell 2 L293)."""
-    return model(x0, u, t)
+    the same way (n15 cell 2 L293). `theta_ss_grid` is optional and ignored by the
+    monolithic baselines, which have no analytic baseline."""
+    return model(x0, u, t, theta_ss_grid=theta_ss_grid)
 
 
-__all__ = ["CODOperator", "CODNoBaseline", "cod_predict"]
+def steady_state_grid(model, u_sensors):
+    """theta_ss on the sensor grid for a batch of profiles, (B, n_sensors).
+
+    Computed with the model's own registered buffers and its own `_theta_ss`, so the
+    result is bit-identical to what `forward` would have computed internally. Use
+    this to build the dataset cache.
+    """
+    ns = model.n_sensors
+    with torch.no_grad():
+        return model._theta_ss(u_sensors[:, :ns], u_sensors[:, ns:2 * ns])
+
+
+__all__ = ["CODOperator", "CODNoBaseline", "cod_predict", "steady_state_grid",
+           "THETA_SS_MODES"]

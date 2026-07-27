@@ -171,7 +171,8 @@ def ode_physics_loss(model, x0, sensors, n_col: int = 40, n_chunks: int = 5,
                      eps_causal: float = 0.01, return_per_state: bool = False,
                      diagnostics: dict | None = None,
                      causal_log_space: bool = True,
-                     causal_floor: float = CAUSAL_WEIGHT_FLOOR):
+                     causal_floor: float = CAUSAL_WEIGHT_FLOOR,
+                     theta_ss_grid=None):
     """Causally weighted mean squared ODE residual.
 
     LAST DEFINITION WINS. Three definitions exist in n12; the one that trained
@@ -216,7 +217,14 @@ def ode_physics_loss(model, x0, sensors, n_col: int = 40, n_chunks: int = 5,
     s_exp = sensors.unsqueeze(1).expand(B, n_col, 2 * ns).reshape(B * n_col, 2 * ns)
     tf = tc.reshape(B * n_col, 1).detach().clone().requires_grad_(True)
 
-    x_pred_raw = model(x0_exp, s_exp, tf)
+    # Cached theta_ss is expanded exactly as `sensors` is, so row i of the cache
+    # belongs to row i of the batch. Skips the contraction solve fix 1 introduced.
+    ss_exp = None
+    if theta_ss_grid is not None:
+        ss_exp = theta_ss_grid.unsqueeze(1).expand(
+            B, n_col, theta_ss_grid.shape[-1]).reshape(B * n_col, -1)
+
+    x_pred_raw = model(x0_exp, s_exp, tf, theta_ss_grid=ss_exp)
     dxdt = torch.cat([
         torch.autograd.grad(x_pred_raw[:, i].sum(), tf,
                             create_graph=True, retain_graph=True)[0]

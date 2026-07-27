@@ -711,3 +711,105 @@ number of periods the ratio is unaffected, which holds for the time-varying test
 profiles (period = TW). It would not hold for a genuine 24 h profile observed over
 12 h, and a real deployment averages over 24 h. Parametrised rather than
 hard-coded, and stated in the report.
+
+---
+
+## Caching the fix-1 steady state
+
+### J-42 The cache is safe because the expensive uses carry no gradient
+
+Phase 2 fix 1 replaced a closed-form steady state with a contraction solve, which
+cost **2.62x per epoch** (interleaved median of 5 on an idle machine; sequential
+runs on a busy one read anywhere from 2.1x to 5.1x, which is why the check script
+now interleaves).
+
+`theta_ss` has three uses. Two are on the sensor grid and need no gradient:
+
+* `_ode_baseline` — the grid values enter `F_cum`; the `t`-gradient flows through
+  the interpolation weight `frac` and through `decay`, never through the values
+  themselves. No `nn.Parameter` is involved.
+* `build_trunk_feats` `tss_s` → `dm` and `dr`. `dm` is gathered with
+  `idx1 = tn_idx.long()`, an integer index, so it is piecewise-constant in `t` and
+  carries zero gradient almost everywhere. `dr` is a max minus a min over the whole
+  window and has no `t`-dependence at all.
+
+The third use is the query-time value feeding the `driving` feature. That one is
+interpolated at `t` and **must** stay differentiable, so it is left live.
+
+So the two grid uses are cached and the differentiable one is not. Checked, not
+assumed: `audit_port/scripts/11_check_ss_cache.py` asserts a forward pass with the
+cache is bit-identical to one without, in both eval mode and training mode (the
+`n_grid=20` sub-grid path), and that `d(theta_TO)/dt` is still finite and nonzero.
+
+### J-43 Where the cache lives, and a second exact saving
+
+`TrainingSet` gains `theta_ss` of shape (N, n_sensors), computed at generation by
+`steady_state_on_grid` and stored in the `.npz`. It is computed with
+`true_fixed_point_torch` in float32 — the same function and dtype the model uses —
+so the stored values are bit-identical to what the model would have computed.
+Verified against `CODOperator._theta_ss` directly: max difference 0.000e+00.
+
+`load_training_set` returns `theta_ss=None` for the stored v57 `.npz`, which
+predates the field, and `TrainingSet.ensure_theta_ss()` fills it in on demand. So
+nothing breaks on the existing artifact.
+
+Second saving, independent of the cache and also exact: `_thermal_predict_grid`
+was solving `theta_ss` on its **expanded** (B*ns, ns) tensor. It now solves on the
+unique (B, ns) sub-grid once and expands the result. Expanding identical values is
+exact, so this is a pure ns-fold reduction — 2.05M elements down to 102k.
+
+Result: **2.62x -> 1.48x** of the pre-fix-1 cost, i.e. the cache removes 70% of
+fix 1's overhead.
+
+### J-44 Why it is 1.48x and not 1.0x, and why I stopped there
+
+The residual is the one use that has to stay differentiable. `ode_physics_loss`
+calls `autograd.grad` six times per step, once per state, with
+`retain_graph=True`, so the query-time solve's 20-iteration graph is
+back-propagated six times.
+
+Removing that means computing the query-time value as an *interpolation of the
+cached grid* rather than as `theta_ss` evaluated at interpolated `(K, Ta)`. Those
+are not the same function: one interpolates the output of a nonlinear map, the
+other applies the map to interpolated inputs. It would be a change to the model's
+semantics, not a cache, and it would break the bit-exactness that makes this whole
+change safe to land. A throwaway measurement put the remaining opportunity at
+about 0.6 s/epoch, so it is worth roughly another 0.5x — real, but not free.
+
+Not taken. Flagged here instead, per the instruction to say so rather than work
+around it.
+
+### J-45 Nothing downstream moved
+
+Re-verified after the change:
+
+| check | result |
+|---|---|
+| `steady_state.compare()` | identical to audit step3 §3.3, every cell |
+| `JENSEN_GAP.md` | **byte-identical** before and after |
+| dataset reproduction (seed 42, 8000 ICs) | still byte-exact against the stored `.npz` |
+| all 13 checkpoints, `strict=True` | still load |
+| fix-1 solver vs brentq | still 1.33e-08 degC over the 2009-point grid |
+| training wiring, both trainers | still passes |
+| Phase 1 gates 1, 2, 3 | **all pass** |
+| smoke run, 100 epochs / 50 ICs | theta_TO MAE **1.475 degC**, identical to the pre-cache smoke run |
+
+The last row is the strongest of them: 100 training steps with the cache produce
+the same weights as 100 without it, to the precision of the reported metrics.
+
+### J-46 Training moved off this machine
+
+Per instruction, and consistent with C-5: this machine has 4 cores and no CUDA, so
+a 25,000-epoch run is 8-22 hours here against roughly an hour on a T4. No real
+training is run locally. `scripts/colab_run.md` is the recipe, written so several
+accounts can run different configs in parallel into one shared Drive folder —
+`run.py` already namespaces output by `experiment.variant`, seed and config hash,
+so parallel runs do not collide.
+
+O-5 (retrain on the corrected physics) therefore stays **open**, with the local
+work needed to make it cheap now done.
+
+`run.py` gained three flags for this: `--max-wall-seconds` (so a run that will not
+fit stops cleanly and records `stop_reason='wall_clock_budget'` rather than being
+silently shortened), `--tag`, and `--theta-ss` (to run the v57-physics control
+against the corrected physics without editing a config).

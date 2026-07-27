@@ -62,7 +62,7 @@ class ModifiedMLP(nn.Module):
 
 def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
                       R_buf, ne_buf, me_buf, Do_buf, Dhs_buf, ac_buf, Tr_buf,
-                      theta_ss_mode: str = "formula_C"):
+                      theta_ss_mode: str = "formula_C", theta_ss_grid=None):
     """The 32-dimensional trunk input: 28 features plus 4 K-history features.
 
     Layout, in order:
@@ -90,6 +90,14 @@ def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
     trunk features as well as the analytic baseline. The monolithic baselines stay
     on `formula_C`: they have no analytic baseline, so they are outside fix 1's
     scope, and their theta_ss is computed with the shadowed exponent anyway.
+
+    `theta_ss_grid`, if given, is theta_ss already evaluated on the sensor grid,
+    shape (B, ns). It replaces the `tss_s` solve and nothing else. Safe because
+    `tss_s` reaches the output only through `dm` — gathered with an integer index,
+    so piecewise-constant in `t` and carrying no gradient — and `dr`, a max minus a
+    min over the whole window with no `t`-dependence at all. Neither touches an
+    `nn.Parameter`. The query-time `tss` below is NOT cached: it is interpolated at
+    `t` and feeds `driving`, so it must stay differentiable in `t`.
     """
     t_sq = t.squeeze(-1)
     exps = torch.exp(-t * exp_rates / tau_buf)
@@ -124,7 +132,9 @@ def build_trunk_feats(t, u_sensors, x0_TO, T, ns, exp_rates, tau_buf,
 
     # K history over the whole sensor grid
     Ks = u_sensors[:, :ns]
-    if theta_ss_mode == "true_fixed_point":
+    if theta_ss_grid is not None:
+        tss_s = theta_ss_grid
+    elif theta_ss_mode == "true_fixed_point":
         tss_s = _theta_ss_true(Ks, u_sensors[:, ns:], R_buf, ne_buf, me_buf,
                                Do_buf, Dhs_buf, ac_buf, Tr_buf)
     else:

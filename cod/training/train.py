@@ -108,7 +108,7 @@ class _BatchSource:
     """
 
     def __init__(self, x0s, sensors, device, batch_size: int = 128,
-                 val_fraction: float = 0.05, seed: int = 0):
+                 val_fraction: float = 0.05, seed: int = 0, theta_ss=None):
         n = len(x0s)
         rs = np.random.RandomState(seed)
         perm = rs.permutation(n)
@@ -118,6 +118,8 @@ class _BatchSource:
 
         self.x0s = torch.as_tensor(x0s, dtype=torch.float32, device=device)
         self.sensors = torch.as_tensor(sensors, dtype=torch.float32, device=device)
+        self.theta_ss = (None if theta_ss is None else
+                         torch.as_tensor(theta_ss, dtype=torch.float32, device=device))
         self.batch_size = batch_size
         self.device = device
         self._train_idx_t = torch.as_tensor(self.train_idx, device=device)
@@ -129,12 +131,16 @@ class _BatchSource:
         n = n or self.batch_size
         pick = torch.randint(0, len(self.train_idx), (n,), generator=self._gen)
         idx = self._train_idx_t[pick.to(self.device)]
-        return self.x0s[idx], self.sensors[idx]
+        return self._gather(idx)
 
     def val_batch(self, n: int | None = None):
         n = min(n or self.batch_size, len(self.val_idx))
         idx = self._val_idx_t[:n]
-        return self.x0s[idx], self.sensors[idx]
+        return self._gather(idx)
+
+    def _gather(self, idx):
+        ss = None if self.theta_ss is None else self.theta_ss[idx]
+        return self.x0s[idx], self.sensors[idx], ss
 
 
 class CODTrainer:
@@ -165,7 +171,8 @@ class CODTrainer:
                  val_fraction: float = 0.05,
                  causal_log_space: bool = True,
                  causal_floor: float = CAUSAL_WEIGHT_FLOOR,
-                 causal_schedule_shared: bool = True):
+                 causal_schedule_shared: bool = True,
+                 theta_ss=None):
         self.device = device or next(model.parameters()).device
         self.model = model
         self.n_fb = n_fb
@@ -174,7 +181,8 @@ class CODTrainer:
         self.n_states = model.state_dim
 
         self.data = _BatchSource(x0s, sensors, self.device, batch_size=n_fb,
-                                 val_fraction=val_fraction, seed=seed)
+                                 val_fraction=val_fraction, seed=seed,
+                                 theta_ss=theta_ss)
         self.opt = optim.Adam(model.parameters(), lr=lr)
         self.sch = optim.lr_scheduler.CosineAnnealingLR(
             self.opt, T_max=max_epochs, eta_min=1e-5)
@@ -189,14 +197,14 @@ class CODTrainer:
 
     def train_step(self) -> dict:
         self.model.train()
-        x0_b, s_b = self.data.train_batch()
+        x0_b, s_b, ss_b = self.data.train_batch()
         diag: dict = {}
 
         L_states, wm = ode_physics_loss(
             self.model, x0_b, s_b, n_col=self.n_col, n_chunks=self.n_chunks,
             eps_causal=self.eps_schedule.eps, return_per_state=True,
             diagnostics=diag, causal_log_space=self.causal_log_space,
-            causal_floor=self.causal_floor,
+            causal_floor=self.causal_floor, theta_ss_grid=ss_b,
         )
 
         with torch.no_grad():
@@ -243,12 +251,12 @@ class CODTrainer:
         The optimiser is never stepped here and gradients are discarded.
         """
         self.model.eval()
-        x0_v, s_v = self.data.val_batch()
+        x0_v, s_v, ss_v = self.data.val_batch()
         L_states, _ = ode_physics_loss(
             self.model, x0_v, s_v, n_col=self.n_col, n_chunks=self.n_chunks,
             eps_causal=self.eps_schedule.eps, return_per_state=True,
             causal_log_space=self.causal_log_space,
-            causal_floor=self.causal_floor)
+            causal_floor=self.causal_floor, theta_ss_grid=ss_v)
         val = float(sum(self.lam_state[s] * L_states[s]
                         for s in range(self.n_states)).item())
         self.model.zero_grad(set_to_none=True)
@@ -322,7 +330,7 @@ class SharedPhysicsTrainer:
 
     def train_step(self) -> dict:
         self.model.train()
-        x0_b, s_b = self.data.train_batch()
+        x0_b, s_b, _ = self.data.train_batch()
         diag: dict = {}
         loss, wm = self._loss_terms(x0_b, s_b, diag)
 
@@ -348,7 +356,7 @@ class SharedPhysicsTrainer:
 
     def validation_loss(self) -> float:
         self.model.eval()
-        x0_v, s_v = self.data.val_batch()
+        x0_v, s_v, _ = self.data.val_batch()
         loss, _ = self._loss_terms(x0_v, s_v)
         val = float(loss.item())
         self.model.zero_grad(set_to_none=True)
