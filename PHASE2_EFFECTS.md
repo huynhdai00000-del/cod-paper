@@ -95,6 +95,26 @@ That is precisely the gap (audit B-5): training saw one phase, the test set anot
 
 Under v57 every single training profile starts at its ambient mean, because sin(0) = 0. The test set's pi/3 phase starts it 0.866 of the amplitude above the mean instead — a systematic offset the model never saw in training. After the fix only 0.7% of training profiles have that special structure.
 
+## Fix 5 — add the missing `.clip()` to the 'step' branch
+
+Gate 1 movement: **none.** Only the training profile generator has a 'step' branch; the test set uses constant or sinusoidal K.
+
+Verified on the full 8000-profile training set, generated through `generate_training_set` with every v57 setting on both arms so that only `clip_step` differs and the v57 column reproduces the stored `transformer_training_v57.npz` exactly:
+
+| | v57 (unclipped) | fixed |
+|---|---|---|
+| min K over all profiles | 0.257134 | 0.300000 |
+| (stored .npz min, for reference) | 0.257134 | — |
+| max K over all profiles | 1.500000 | 1.500000 |
+| profiles below the 0.3 floor | 12 | 0 |
+| profiles above the 1.4 ceiling | 601 | 592 |
+
+The v57 arm reproduces the stored minimum of 0.257134 exactly, which confirms the 'step' branch is the one responsible. After the fix the minimum is exactly the documented floor.
+
+12 of 8000 profiles dipped below the 0.3 floor, and the clip also brings 9 back under the 1.4 ceiling. The 592 profiles still above 1.4 belong to the sinusoidal, `tv_high_amp` and `overload_spike` families, which clip to 1.5 deliberately because they are meant to reach into overload — so 1.4 is the right bound for `step`, matching its piecewise-constant siblings `ramp` and `multi_step`.
+
+A small share of the training mass, so this is a correctness fix rather than a results fix. It is still worth making: a documented sampling range the code does not honour is exactly the kind of discrepancy a reviewer checks.
+
 ## Summary
 
 | fix | moves Gate 1? | measured effect | checkpoint still valid? |
@@ -103,5 +123,7 @@ Under v57 every single training profile starts at its ambient mean, because sin(
 | 2 double pd_factor | no, by construction | `c_C2H2` RHS_SCALE /2.215; nothing consumes it | yes |
 | 3 causal weighting | no, by construction | weight floor 0.0 -> 1e-8; no underflow at any eps*cum; schedule now shared | yes |
 | 4 ambient phase | no | training profiles starting at their ambient mean 100% -> 1% | **no — training distribution changed** |
-| 5 | not yet applied | — | — |
+| 5 step clip | no | min training K 0.2571 -> 0.3000 | **no — training distribution changed** |
+
+Fixes 1, 4 and 5 all change the training distribution, so the frozen distribution hash must be re-established and recorded in `DISTRIBUTION_FREEZE.md` before the first retrain. Fixes 2 and 3 leave the distribution untouched.
 

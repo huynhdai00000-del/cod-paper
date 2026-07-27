@@ -33,7 +33,7 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 print("=== Training set reproduction (seed 42, N=8000) ===")
 stored = load_training_set(STORED)
 regen = generate_training_set(n_ic=8000, seed=42, steady_state=formula_A,
-                              randomise_ambient_phase=False)
+                              randomise_ambient_phase=False, clip_step=False)
 
 check("x0s exact match", np.array_equal(stored.x0s, regen.x0s),
       f"max|diff| = {np.abs(stored.x0s - regen.x0s).max():.3e}")

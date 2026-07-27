@@ -36,7 +36,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from cod.data import physics
-from cod.data.generate import build_test_set, load_training_set
+from cod.data.generate import (
+    build_test_set,
+    generate_training_set,
+    load_training_set,
+)
 from cod.data.profiles import make_sensor_profile
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, STATE_NAMES_FAST, TW
 from cod.data.steady_state import formula_A, true_fixed_point, true_fixed_point_np
@@ -254,6 +258,56 @@ def main() -> int:
     print(f"  profiles starting at ambient mean: v57 "
           f"{(start_dev_v57 < 1e-2).mean():.1%} -> fixed {(start_dev_fix < 1e-2).mean():.1%}")
 
+    # ── Fix 5 ─────────────────────────────────────────────────────────────
+    md.append("## Fix 5 — add the missing `.clip()` to the 'step' branch\n")
+    print("\n=== fix 5 ===")
+    # Both arms go through generate_training_set with the full v57 settings, so
+    # the rng stream position is exactly the stored dataset's (8000 ICs drawn
+    # before any profile) and the v57 arm reproduces its K minimum of 0.257134.
+    # Only clip_step differs between the two.
+    ts_v57 = generate_training_set(n_ic=8000, seed=42, steady_state=formula_A,
+                                   randomise_ambient_phase=False, clip_step=False)
+    ts_fix = generate_training_set(n_ic=8000, seed=42, steady_state=formula_A,
+                                   randomise_ambient_phase=False, clip_step=True)
+    K_v57 = ts_v57.sensors[:, :N_SENSORS]
+    K_fix = ts_fix.sensors[:, :N_SENSORS]
+    stored_K = load_training_set(ART / "transformer_training_v57.npz").sensors[:, :N_SENSORS]
+    md.append("Gate 1 movement: **none.** Only the training profile generator has a "
+              "'step' branch; the test set uses constant or sinusoidal K.\n")
+    md.append("Verified on the full 8000-profile training set, generated through "
+              "`generate_training_set` with every v57 setting on both arms so that "
+              "only `clip_step` differs and the v57 column reproduces the stored "
+              "`transformer_training_v57.npz` exactly:\n")
+    md.append("| | v57 (unclipped) | fixed |")
+    md.append("|---|---|---|")
+    md.append(f"| min K over all profiles | {K_v57.min():.6f} | {K_fix.min():.6f} |")
+    md.append(f"| (stored .npz min, for reference) | {stored_K.min():.6f} | — |")
+    md.append(f"| max K over all profiles | {K_v57.max():.6f} | {K_fix.max():.6f} |")
+    md.append(f"| profiles below the 0.3 floor | {(K_v57.min(axis=1) < 0.3).sum()} "
+              f"| {(K_fix.min(axis=1) < 0.3).sum()} |")
+    md.append(f"| profiles above the 1.4 ceiling | "
+              f"{(K_v57[:, :].max(axis=1) > 1.4001).sum()} | "
+              f"{(K_fix[:, :].max(axis=1) > 1.4001).sum()} |")
+    n_below = int((K_v57.min(axis=1) < 0.3).sum())
+    n_above = int((K_v57.max(axis=1) > 1.4001).sum())
+    n_above_fix = int((K_fix.max(axis=1) > 1.4001).sum())
+    md.append(f"\nThe v57 arm reproduces the stored minimum of "
+              f"{stored_K.min():.6f} exactly, which confirms the 'step' branch is "
+              "the one responsible. After the fix the minimum is exactly the "
+              "documented floor.\n")
+    md.append(f"{n_below} of 8000 profiles dipped below the 0.3 floor, and the "
+              f"clip also brings {n_above - n_above_fix} back under the 1.4 "
+              f"ceiling. The {n_above_fix} profiles still above 1.4 belong to the "
+              "sinusoidal, `tv_high_amp` and `overload_spike` families, which clip "
+              "to 1.5 deliberately because they are meant to reach into overload — "
+              "so 1.4 is the right bound for `step`, matching its piecewise-constant "
+              "siblings `ramp` and `multi_step`.\n")
+    md.append("A small share of the training mass, so this is a correctness fix "
+              "rather than a results fix. It is still worth making: a documented "
+              "sampling range the code does not honour is exactly the kind of "
+              "discrepancy a reviewer checks.\n")
+    print(f"  min K: v57 {K_v57.min():.6f} -> fixed {K_fix.min():.6f}")
+
     # ── Summary ───────────────────────────────────────────────────────────
     md.append("## Summary\n")
     md.append("| fix | moves Gate 1? | measured effect | checkpoint still valid? |")
@@ -270,7 +324,13 @@ def main() -> int:
               f"ambient mean {(start_dev_v57 < 1e-2).mean():.0%} -> "
               f"{(start_dev_fix < 1e-2).mean():.0%} | **no — training "
               f"distribution changed** |")
-    md.append("| 5 | not yet applied | — | — |")
+    md.append(f"| 5 step clip | no | min training K {K_v57.min():.4f} -> "
+              f"{K_fix.min():.4f} | **no — training distribution changed** |")
+    md.append("")
+    md.append("Fixes 1, 4 and 5 all change the training distribution, so the "
+              "frozen distribution hash must be re-established and recorded in "
+              "`DISTRIBUTION_FREEZE.md` before the first retrain. Fixes 2 and 3 "
+              "leave the distribution untouched.")
     md.append("")
 
     (ROOT / args.out).write_text("\n".join(md) + "\n", encoding="utf-8")

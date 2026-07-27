@@ -430,3 +430,35 @@ mean, so the test set's ambient shape was structurally outside the training fami
 on one axis, even though its amplitude and base marginals sat inside it. That is a
 sharper statement than "the test set is in distribution" and worth making in the
 paper: the marginals overlapped while the joint structure did not.
+
+### J-26 Fix 5: the clip bound is 1.4, not 1.5
+
+The sibling branches do not agree on a ceiling. `ramp` and `multi_step` clip to
+(0.3, 1.4); `sinusoidal`, `overload_spike`, `peak_then_drop`, `tv_high_amp` and
+`tv_ramp_sin` clip to (0.3, 1.5). So "add the .clip() its siblings have" does not
+name a unique bound and the choice had to be made.
+
+Chose **(0.3, 1.4)**, because `step` is a piecewise-constant family like `ramp` and
+`multi_step`, whereas every 1.5 branch is one that deliberately reaches into
+overload — `overload_spike` draws its spike from U(1.2, 1.5) explicitly. Clipping
+`step` at 1.5 would have let a family with no overload intent produce overload
+loads.
+
+Measured against the exact v57 stream (both arms through `generate_training_set`
+with all v57 settings, only `clip_step` differing, so the v57 arm reproduces the
+stored dataset):
+
+| | v57 | fixed |
+|---|---|---|
+| min K | 0.257134 | 0.300000 |
+| profiles below the 0.3 floor | 12 / 8000 | 0 |
+| profiles above the 1.4 ceiling | 601 | 592 |
+
+The v57 minimum reproduces the stored `transformer_training_v57.npz` value of
+0.257134 exactly, confirming `step` is the branch responsible. The clip also brings
+9 profiles back under 1.4; the 592 still above it are the deliberate-overload
+families.
+
+Correctness rather than results: 12 of 8000 profiles is a small share of the
+training mass. Worth making anyway, because a documented sampling range the code
+does not honour is exactly what a reviewer checks.

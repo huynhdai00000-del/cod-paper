@@ -86,7 +86,8 @@ def sample_consistent_ic(rng: np.random.RandomState,
 
 
 def make_sensor_profile(rng: np.random.RandomState,
-                        randomise_ambient_phase: bool = True) -> np.ndarray:
+                        randomise_ambient_phase: bool = True,
+                        clip_step: bool = True) -> np.ndarray:
     """Sample one (K, theta_a) sensor profile, returned flat as [K(100), Ta(100)].
 
     Draw order, which must not change:
@@ -96,11 +97,12 @@ def make_sensor_profile(rng: np.random.RandomState,
         4. rng.uniform(15, 45)            Ta_base
         5. rng.uniform(0, 8)              Ta amplitude
 
-    KNOWN DEFECT (audit MINOR): the 'step' branch lacks the `.clip(0.3, 1.4)`
-    that its siblings have. That is why the stored sensors reach K = 0.2571,
-    below the documented floor of 0.3 — confirmed against the stored .npz
-    (min 0.257134, 0.15% of profiles below the floor). Left unclipped here;
-    Phase 2 fix 5 adds the clip.
+    PHASE 2 FIX 5 (audit MINOR): the 'step' branch now carries the
+    `.clip(0.3, 1.4)` that every sibling branch already had. Without it the stored
+    sensors reach K = 0.2571, below the documented floor of 0.3 — confirmed against
+    the stored .npz (min 0.257134, 12 of 8000 profiles below the floor). Pass
+    `clip_step=False` to reproduce v57. This changes the training distribution, so
+    a retrain is required.
 
     PHASE 2 FIX 4 (audit B-5): the ambient phase is now drawn from U(0, 2 pi).
     v57 fixed it at 0 while the seed-999 test set uses pi/3, so training never saw
@@ -135,8 +137,14 @@ def make_sensor_profile(rng: np.random.RandomState,
         K_prof = (K_base + amp * np.sin(2 * np.pi * tau / period + phase)).clip(0.3, 1.5)
     elif kind == "step":
         t_step = rng.uniform(0.2, 0.8) * TW
-        # KNOWN DEFECT: no .clip() here, unlike every sibling branch.
         K_prof = np.where(tau < t_step, K_base, K_base + rng.uniform(-0.3, 0.3))
+        if clip_step:
+            # PHASE 2 FIX 5. Bounds match the 'ramp' and 'multi_step' branches,
+            # which use (0.3, 1.4) rather than the (0.3, 1.5) of the sinusoidal
+            # families. 'step' is a piecewise-constant sibling of those two, so
+            # 1.4 is the consistent choice; 1.5 is reserved for the branches that
+            # deliberately reach into overload.
+            K_prof = K_prof.clip(0.3, 1.4)
     elif kind == "overload_spike":
         K_prof = np.full(N_SENSORS, K_base)
         t_start = rng.uniform(0.2, 0.6) * TW

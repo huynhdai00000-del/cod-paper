@@ -87,7 +87,7 @@ class TrainingSet:
 
 def generate_training_set(n_ic: int = N_IC, seed: int = 42,
                           randomise_ambient_phase: bool = True,
-                          steady_state=None) -> TrainingSet:
+                          steady_state=None, clip_step: bool = True) -> TrainingSet:
     """Regenerate the training set from scratch.
 
     n12 cell 0 L1002-L1006: one RandomState(42) draws all ICs first, then all
@@ -103,7 +103,8 @@ def generate_training_set(n_ic: int = N_IC, seed: int = 42,
     x0s = np.array([sample_consistent_ic(rng, steady_state=steady_state)
                     for _ in range(n_ic)])
     sensors = np.array([
-        make_sensor_profile(rng, randomise_ambient_phase=randomise_ambient_phase)
+        make_sensor_profile(rng, randomise_ambient_phase=randomise_ambient_phase,
+                            clip_step=clip_step)
         for _ in range(n_ic)
     ])
     x_mean = x0s.mean(axis=0)
