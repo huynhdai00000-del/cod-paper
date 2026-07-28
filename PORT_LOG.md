@@ -1026,3 +1026,100 @@ clamps and the reference does not" note is gone. The temperature envelope is
 deliberately *not* applied there either: the Jensen measurements live around
 100 degC where it is inert, and adding it would silently flatten any future
 measurement taken outside the envelope instead of making it visible.
+
+---
+
+## O-10 — calibrating the load swing against ETT
+
+### J-58 Apparent power, and why active power alone would have been wrong
+
+IEC 60076-7's K is a load-*current* ratio and losses go as I^2, so the quantity a
+thermal model responds to is `|S| = sqrt(P^2 + Q^2)` summed over ETT's three
+customer classes, not the active-power columns. It is also the only combination
+that stays non-negative, which turned out to matter: ETTh1's total active power is
+negative in 13.3% of hours.
+
+Three other choices, all recorded in the report rather than made silently: never
+pool the two series (they are different transformers and they disagree), compare
+`K_amp` against **half** the peak-to-trough range because `K = K_base + K_amp*sin`,
+and drop blocks containing an hour with every load channel at exactly zero as meter
+outages (3 of 725 days on ETTh1, 0 on ETTh2).
+
+### J-59 ETT publishes no nameplate rating, so §3b rests on a proxy
+
+`K_amp` is per-unit of rated, so comparing to it needs a rated load that ETT does
+not supply. Three proxies are tabulated instead of one being chosen quietly:
+`p99(|S|)`, `p99/0.85`, and `max`. The middle one is quoted, on the grounds that
+`p99` as rated asserts the unit hits nameplate in 1% of hours while real units peak
+nearer 0.7-0.9 pu. The direction of the assumption is stated: a lower assumed peak
+loading makes rated larger and the measured swing *smaller*, so `p99/0.85` is the
+conservative choice against the sampler, not for it.
+
+The rating-free normalisation (fraction of the day's own mean) is reported first
+and then partly withdrawn: it breaks on ETTh1, whose net load sits near zero at
+midday, depressing the denominator and widening the numerator at once. Its 62%
+median is not a usable number and the report says so rather than letting it stand.
+
+### J-60 The finding is a disagreement between two units, not a single number
+
+Median daily swing as a fraction of rated, against `K_amp = 12-28%`:
+
+| | median | below band | inside | above |
+|---|---|---|---|---|
+| ETTh2, all days | 8.7% | 85.2% | 14.8% | 0.0% |
+| ETTh1, non-back-feeding days | 17.8% | 15.6% | 77.5% | 6.9% |
+| ETTh1, back-feeding days | 29.7% | 0.0% | 39.1% | 60.9% |
+
+Stated plainly, as the brief asked: **on the conventionally loaded unit a real
+transformer swings about half what `RealisticParams` assumes**, and a Jensen
+headline computed on the current sampler is correspondingly optimistic. On the
+other unit it does not.
+
+### J-61 ETTh1 back-feeds at midday and it is photovoltaic
+
+Negative total active power on ETTh1 is zero at night, 51% at noon, and peaks
+March-June. A midday-only, spring-peaking reversal is PV export and nothing else.
+That makes ETTh1 the closer analogue to the manuscript's own framing — cycling
+driven by renewables — and it is the unit that reaches `K_amp`'s band.
+
+Initial expectation was that the PV would account for the whole difference between
+the units, which would have been convenient: `K_amp` could then have been set from
+a conventional baseline with a documented uplift for renewable duty. It does not.
+Removing back-feeding days moves ETTh1 from 24.8% to 17.8%, about 7 of the 16
+points separating it from ETTh2, and a non-back-feeding ETTh1 day still swings 2.0x
+an ETTh2 day. The between-feeder spread is irreducible at n = 2 and two units
+cannot estimate it. Recorded because the first draft of the report asserted the
+convenient version before the split was computed.
+
+### J-62 The oil temperature is the uncomfortable number, and it is left visible
+
+Beyond what O-10 asked for. ETT ships `OT` alongside the load that produced it, so
+it measures the quantity `K_amp` exists to produce rather than its input. Daily
+top-oil amplitude: median 2.39 degC on ETTh1, 5.60 on ETTh2, against a sampler
+targeting 10-15 degC at the hot spot.
+
+Three reasons that is suggestive rather than decisive, all in the report: hot-spot
+amplitude exceeds top-oil amplitude because the gradient moves in phase with the
+load (plausibly ~2x, not the ~4x the comparison would need); **these units run
+cold**, median OT 11.4 and 26.6 degC against `hot_spot_mean = 86`, and rise scales
+as roughly `K^(2n)` so a lightly loaded unit swings little in absolute degC; and
+`OT` is a sensor reading, not `theta_TO` as the model defines it.
+
+So the load measurement transfers to a hotter unit and this one does not. It is
+kept anyway, flagged as the number most likely to be flattering the sampler, and
+turned into the concrete follow-up in J-63 instead of being dropped for being
+inconvenient.
+
+### J-63 The thermal parameters have the same problem as the gas kinetics
+
+`tau_oil`, `DTheta_oil_R` and `n_exp` are IEC defaults, assumed rather than fitted,
+exactly as `k_gen`/`k_dis` are in O-3. ETT gives measured oil temperature against
+measured load on two real units, which is enough to test them directly. Not
+attempted: it is larger than O-10 and would want its own entry. Noted as the reason
+§5's discrepancy is currently unexplained rather than explained away.
+
+### J-64 Nothing was changed
+
+`RealisticParams` is untouched, as the brief required. Setting `K_amp` from this
+would mean choosing which population the benchmark is about, and on a two-unit
+sample that is a scope decision for the paper, not a calibration.

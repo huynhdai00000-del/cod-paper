@@ -185,11 +185,53 @@ Triển khai `cod/models/daily_mean.py` và đo tỷ số giữa tích phân tr�
 ### O-9. Bias −3 °C chưa có lời giải thích
 Audit xác nhận bias tồn tại (`|bias|_mean = 3,09 °C`) nhưng bác lời giải thích trong bài (cấu trúc bậc thang ETC tại K = 1: hai công thức trùng nhau chính xác tại K = 1). Ở cửa sổ đơn thì 3 °C nhỏ, nhưng qua rollout với độ nhạy 10,8 %/K thì bias hệ thống này làm sai tốc độ lão hóa khoảng 30 phần trăm. Cần chẩn đoán thật trước khi công bố bất kỳ con số end-of-life nào.
 
-**O-10 (mới). Hiệu chuẩn phân phối tải theo ETT.** RealisticParams cần dao
-động tải ngày ±12-28% để đạt biên độ nhiệt 10-15 °C, ở mức trên của feeder
-thực tế. ETT có gần hai năm tải thật theo giờ; lấy phân phối biên độ dao động
-ngày từ đó để kiểm chứng. Không cần tham số nameplate hay nhiệt độ môi trường
-cho việc này.
+**O-10. Hiệu chuẩn phân phối tải theo ETT.** Đo xong 2026-07-28,
+`audit_port/ETT_LOAD_CALIBRATION.md`. **Chưa đóng**: kết quả là một quyết định
+phạm vi chứ không phải một con số hiệu chuẩn, và quyết định đó chưa có.
+
+Đo trên ETTh1 và ETTh2 (hai máy khác nhau, 17.420 giờ mỗi máy, 2016-07 đến
+2018-06). Dùng công suất biểu kiến `|S| = sqrt(P² + Q²)` vì K của IEC 60076-7
+là tỷ số dòng điện; so với **nửa** biên độ đỉnh-đáy vì `K = K_base + K_amp·sin`.
+ETT không công bố công suất định mức nên phần "phần trăm của định mức" dựa trên
+proxy `p99/0,85`, có bảng độ nhạy.
+
+Biên độ dao động tải ngày, tính theo phần của định mức, so với K_amp = 12-28%:
+
+| | trung vị | dưới dải | trong dải | trên dải |
+|---|---|---|---|---|
+| ETTh2, mọi ngày | 8,7% | 85,2% | 14,8% | 0,0% |
+| ETTh1, ngày không phát ngược | 17,8% | 15,6% | 77,5% | 6,9% |
+| ETTh1, ngày phát ngược | 29,7% | 0,0% | 39,1% | 60,9% |
+
+Nói thẳng: **trên máy tải quy ước, feeder thật dao động khoảng một nửa mức
+RealisticParams giả định**, nên headline Jensen tính trên bộ lấy mẫu hiện tại
+là lạc quan. Trên máy còn lại thì không.
+
+ETTh1 phát ngược giữa trưa: 0% ban đêm, 51% lúc 12h, đỉnh tháng 3-6. Đó là điện
+mặt trời phát ngược, tức đúng chế độ vận hành mà bài mở đầu. Nhưng PV chỉ giải
+thích 7 trên 16 điểm chênh giữa hai máy; ngày không phát ngược của ETTh1 vẫn dao
+động gấp 2,0 lần ETTh2. Chênh lệch giữa các feeder không rút gọn được với n = 2.
+
+Hai điều kèm theo, ghi lại vì quan trọng hơn chính O-10:
+
+1. Biên độ **nhiệt độ dầu đo được** trên ETT là 2,39 và 5,60 °C (trung vị),
+   trong khi bộ lấy mẫu nhắm 10-15 °C ở hot-spot. Ba lý do khiến đây là gợi ý
+   chứ chưa kết luận nằm ở §5 của báo cáo — quan trọng nhất: hai máy này chạy
+   **lạnh** (OT trung vị 11,4 và 26,6 °C so với `hot_spot_mean = 86`), mà độ
+   tăng nhiệt tỷ lệ khoảng `K^(2n)`.
+2. Do đó `tau_oil`, `DTheta_oil_R`, `n_exp` cũng ở đúng tình trạng của `k_gen`
+   và `k_dis` trong O-3: lấy mặc định IEC, chưa khớp với dữ liệu nào. ETT có OT
+   đo cùng tải đo nên kiểm được trực tiếp. Xem O-11.
+
+Chưa sửa gì trong `RealisticParams`, theo đúng yêu cầu báo cáo trước.
+
+**O-11 (mới). Tham số nhiệt chưa từng khớp với dữ liệu nào.** `tau_oil = 150`,
+`DTheta_oil_R = 55`, `n_exp = 0,8` là mặc định IEC, giả định chứ không hiệu
+chuẩn — cùng loại vấn đề với O-3 nhưng ở tầng nhiệt, tức tầng mà toàn bộ
+cascade phụ thuộc. ETT cung cấp OT đo được cùng với tải đo được trên hai máy
+thật, đủ để kiểm trực tiếp. Sinh ra từ O-10 §5: biên độ nhiệt dầu đo được thấp
+hơn nhiều so với mức mà tham số giả định ngụ ý, và chênh lệch đó hiện chưa có
+lời giải thích.
 
 ---
 
