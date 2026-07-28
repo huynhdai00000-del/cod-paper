@@ -28,6 +28,9 @@ from cod.data.physics import (
     B_aging,
     DP0,
     DP_EOL,
+    LEGACY_V_ARR_CAP,
+    T_HS_K_MAX,
+    T_HS_K_MIN,
     T_ref,
     compute_theta_HS_torch,
     fast_rhs_torch,
@@ -287,12 +290,19 @@ def _clamp_diagnostics(x_pred_raw, x_pred_c, u_t, lo, hi) -> dict:
     fac_m1 = ((1.0 + K ** 2 * R_load * Rf1.clamp(0.8, 1.5)) / (1.0 + R_load)) ** m_exp
     theta_HS = theta_TO + DTheta_HS_R * fac_m1
     T_HS_K = theta_HS + 273.15
-    out["clamp_frac_T_HS_min"] = float((T_HS_K < 313.15).float().mean())
+    out["clamp_frac_T_HS_min"] = float((T_HS_K < T_HS_K_MIN).float().mean())
+    # PHASE 2 FIX 6. The live bound is now the reference's own temperature
+    # envelope, so that is what gets reported. `clamp_frac_V_arr_max` is retained
+    # alongside it because the v57 cap is still reachable via `legacy_V_clamp` and
+    # the two answer different questions.
+    out["clamp_frac_T_HS_max"] = float((T_HS_K > T_HS_K_MAX).float().mean())
 
     from cod.data.physics import E_act
     E_act_t = _c("eact", E_act.astype(np.float32), x_pred_c.device)
-    V_arr = torch.exp(B_aging * E_act_t * (1.0 / T_ref - 1.0 / T_HS_K.clamp(min=313.15)))
-    out["clamp_frac_V_arr_max"] = float((V_arr > 1e4).any(dim=-1).float().mean())
+    V_arr = torch.exp(B_aging * E_act_t
+                      * (1.0 / T_ref - 1.0 / T_HS_K.clamp(T_HS_K_MIN, T_HS_K_MAX)))
+    out["clamp_frac_V_arr_max"] = float(
+        (V_arr > LEGACY_V_ARR_CAP).any(dim=-1).float().mean())
     out["n_collocation_samples"] = n_tot
     return out
 
@@ -440,7 +450,10 @@ def chi_monotonicity_loss(model, x0, sensors, n_t: int = 8, DP_cur=None,
     K_mean = sensors[:, :ns].mean(dim=-1).clamp(0.3, 1.5)
     theta_HS_mid = compute_theta_HS_torch(x_mid, K_mean)
     T_HS_K_mid = (theta_HS_mid + 273.15).clamp(min=313.15)
-    V_mid = torch.exp(B_aging * (1.0 / T_ref - 1.0 / T_HS_K_mid)).clamp(max=1e4)
+    # PHASE 2 FIX 6. The `.clamp(max=1e4)` that used to close this line was
+    # unreachable and is gone: `compute_theta_HS_torch` already clamps theta_HS at
+    # 200 degC, where V_arr for E_a = 1 is 1740.7. Removing it is bit-identical.
+    V_mid = torch.exp(B_aging * (1.0 / T_ref - 1.0 / T_HS_K_mid))
 
     inv_DP_end = 1.0 / float(DP_cur) + k0_aging * V_mid * model.T
     DP_end_pred = (1.0 / inv_DP_end).clamp(1.0, float(DP0))
@@ -503,7 +516,9 @@ def chi_rate_loss_v10(model, x0, sensors, n_t: int = 6, DP_cur=None,
     dchi_dt = torch.autograd.grad(chi_t.sum(), tq, create_graph=True)[0].squeeze(-1)
 
     T_HS_K = (theta_HS_pred + 273.15).clamp(min=313.15).detach()
-    V_arr = torch.exp(B_aging * (1.0 / T_ref - 1.0 / T_HS_K)).clamp(max=1e4)
+    # PHASE 2 FIX 6. Same unreachable `.clamp(max=1e4)` as in
+    # `chi_monotonicity_loss`, removed for the same reason. Bit-identical.
+    V_arr = torch.exp(B_aging * (1.0 / T_ref - 1.0 / T_HS_K))
     violation = torch.clamp(-dchi_dt - k_chi_max * V_arr, min=0.0)
     return violation.mean()
 

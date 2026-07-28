@@ -73,8 +73,14 @@ Bằng chứng mạnh nhất: sinh lại 8000 IC với seed 42 tái hiện
 bit-for-bit với bản tái hiện của chính audit (`06_test_ranges.npy`, sai khác
 tương đối 0.000e+00). Cả 13 checkpoint load được với `strict=True`.
 
-**Phase 2 — năm fix, mỗi fix một commit: xong.** Xem `PHASE2_EFFECTS.md` để có
+**Phase 2 — sáu fix, mỗi fix một commit: xong.** Xem `PHASE2_EFFECTS.md` để có
 số Gate 1 trước/sau từng fix.
+
+Fix 6 (2026-07-28) đóng DECISIONS N-1: `fast_rhs_torch` và `_gas_integral` bỏ
+`V_arr.clamp(max=1e4)` và lấy đúng bao nhiệt độ `[313.15, 573.15]` K của
+`fast_rhs_np`. Trước đó reference và model giải hai động học khác nhau — 996
+trên 4000 trạng thái ngẫu nhiên lệch nhau, tối đa 100% của đạo hàm; sau fix là
+0. Gate 1 overall 1,49% → 1,26%, `c_C2H2` MAE 0,5926 → 0,1138 ppm.
 
 Mặc định của package bây giờ là hành vi ĐÃ SỬA. Hành vi v57 vẫn gọi được bằng
 tham số tường minh, nên `scripts/verify_phase1.py` vẫn tái hiện đủ ba cổng — đó
@@ -82,7 +88,8 @@ là regression test.
 
 **Checkpoint hiện tại không còn hợp lệ.** Fix 1, 4 và 5 đều đổi training
 distribution, nên phải lập lại hash đóng băng trong `DISTRIBUTION_FREEZE.md`
-trước lần retrain đầu tiên.
+trước lần retrain đầu tiên. Fix 6 vô hiệu checkpoint vì lý do khác: nó đổi
+physics residual, tức mục tiêu huấn luyện, mà không đổi phân phối lấy mẫu.
 
 ## Ba cơ chế xử lý nguyên nhân gốc từ audit
 

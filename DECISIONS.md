@@ -245,11 +245,42 @@ Tiền đề "c_C2H2 chỉ tệ hơn 1,19 lần" của mục này là artifact, 
 
 Ghi vào đây khi phát hiện điều mâu thuẫn với một mục CLOSED. Không tự ý mở lại mục đó.
 
-N-1. Reference ODE và model dùng hàm Arrhenius khác nhau. fast_rhs_np không
-chặn V_arr, fast_rhs_torch và _gas_integral clamp ở 1e4. C2H2 vượt ngưỡng tại
-theta_HS = 187,2 degC, test set chạm 236,9 degC (hệ quả trực tiếp của audit
-M-9). Bỏ clamp làm sàn C2H2 sụt từ 0,591367 xuống 0,000040 ppm. Ảnh hưởng 6
-trên 100 case. Sửa cái này lại vô hiệu checkpoint lần nữa.
+**N-1. GIẢI QUYẾT 2026-07-28 bằng Phase 2 fix 6.** Reference ODE và model dùng
+hàm Arrhenius khác nhau. fast_rhs_np không chặn V_arr, fast_rhs_torch và
+_gas_integral clamp ở 1e4. C2H2 vượt ngưỡng tại theta_HS = 187,2 degC, test set
+chạm 236,9 degC (hệ quả trực tiếp của audit M-9). Ảnh hưởng 6 trên 100 case.
+
+Quyết định: **bỏ trần tốc độ ở phía model, lấy đúng bao nhiệt độ của
+reference** `T_HS_K = clip(theta_HS + 273.15, 313.15, 573.15)`. Lý do vật lý,
+không phải tiện lợi:
+
+1. Một hằng số 1e4 duy nhất áp cho năm khí có nghĩa là năm nhiệt độ chặn khác
+   nhau: 187,2 degC cho C2H2, 356,7 degC cho CO2, trải 170 degC. Không cơ chế
+   bão hòa nào chặn năm phản ứng ở cùng một tốc độ không thứ nguyên. Chặn vật
+   lý của động học Arrhenius là phát biểu về **nhiệt độ**, và reference đã có
+   sẵn đúng phát biểu đó.
+2. Clamp không phải để chống tràn số. `exp(B·e·(1/T_ref − 1/T))` tăng theo T
+   với chặn trên `exp(B·e/T_ref)`, số mũ lớn nhất là 54,83 (C2H2), dưới ngưỡng
+   tràn float32 là 88,7. Không tràn được ở bất kỳ nhiệt độ nào.
+3. Chế độ hỏng nó nhắm tới là biên độ residual trên output mạng chưa hội tụ.
+   `STATE_CLAMP_HI[0] = 200` degC đã chặn theta_TO; góc xấu nhất dựng được từ
+   đó là theta_HS = 300,6 degC tại K = 1,5, tức đúng bao 573,15 K trong vòng
+   một độ. Bao nhiệt độ chặn ở gần như cùng chỗ mà lại khớp ground truth theo
+   cấu trúc.
+4. Với bộ lấy mẫu hiện thực, hot-spot chỉ tới 179,8 degC nên 0/100 case kích
+   hoạt clamp, so với 8/100 ở bộ cũ. Chế độ hỏng không còn phát sinh — nhưng
+   fix không phụ thuộc điều đó, vì benchmark mà reference và model giải hai
+   phương trình khác nhau thì vô hiệu bất kể mẫu hiện tại có nhận ra hay không.
+
+Phương án thay thế (chặn cả reference) đã bác: làm ground truth phi-Arrhenius
+trên một ngưỡng phụ thuộc loài khí không có cơ chế nào đứng sau, phải sinh lại
+toàn bộ nhãn, và benchmark sẽ đo một động học không chuẩn nào mô tả.
+
+Kết quả đo: 4000 trạng thái ngẫu nhiên phủ toàn hộp, float64 — trước fix 996
+hàng lệch (tối đa 100% của đạo hàm), sau fix 0 hàng lệch (5,5e-14). Gate 1:
+overall 1,49% → 1,26%, `c_C2H2` MAE 0,5926 → 0,1138 ppm (5,2 lần), case dưới
+10% từ 99 lên 100. **Vô hiệu checkpoint lần nữa**: fast_rhs_torch là physics
+residual nên mục tiêu huấn luyện đã đổi. Xem `PHASE2_EFFECTS.md` mục Fix 6.
 
 Hệ quả cho C-10 và các lập luận: tỷ số COD/Mono trên C2H2 là 141 lần trên 94
 case sạch, không phải 1,19 lần như bảng all-100 cho thấy. Con số 1,19 phải rút.

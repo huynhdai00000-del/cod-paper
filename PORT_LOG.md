@@ -926,3 +926,103 @@ No hash recorded, no `DISTRIBUTION_FREEZE.md` entry, no test tiers. `RealisticPa
 holds every knob as a dataclass field so the calibration can be argued with. T2
 (parameter extrapolation) and T3 (out-of-family) still need designing on top of this,
 and the freeze has to happen before the first model is trained against it, not after.
+
+---
+
+## Phase 2 fix 6 — the Arrhenius envelope (DECISIONS N-1)
+
+### J-54 Bound the temperature, not the rate
+
+Two implementations of the same kinetics disagreed. `fast_rhs_np`, which produces
+every label through RK45, evaluates a pure Arrhenius factor on a **temperature**
+bounded to `[313.15, 573.15]` K. `fast_rhs_torch` and `CODOperator._gas_integral`
+ported the lower bound and substituted `V_arr.clamp(max=1e4)` for the upper one.
+
+Judgement call: **the model adopts the reference's envelope, and the reference is
+not touched.** Four things decided it, none of them convenience.
+
+*A single rate cap is not a temperature statement.* `V_arr = 1e4` is reached at
+187.2 degC for C2H2 and 356.7 degC for CO2 — a 170 degC spread from one constant,
+because the threshold moves with `E_act`. No saturation mechanism caps five
+different reactions at the same dimensionless rate. If saturation were real it
+would be species-specific and derived from a mechanism. A physical bound on
+Arrhenius kinetics is a bound on temperature, and the reference already carries one
+that says something defensible: above ~300 degC the oil is pyrolysing and this
+kinetic model describes nothing.
+
+*It was never an overflow guard.* `exp(B*e*(1/T_ref - 1/T))` is increasing in T
+with supremum `exp(B*e/T_ref)`. The largest exponent across the six states is
+54.83 (C2H2), against a float32 `exp` overflow threshold of 88.7. The factor cannot
+overflow at any temperature, finite or infinite. Whatever the cap was for, it was
+not that.
+
+*What it was actually for, and why the envelope is a better version of it.* The
+residual is evaluated on the *network's* predicted state, which is unbounded early
+in training, so a magnitude guard is a reasonable thing to want. But the physics
+loss already clamps the state at `STATE_CLAMP_HI[0] = 200` degC top-oil, and the
+worst hot-spot constructible from that corner is 300.6 degC at K = 1.5 — the
+573.15 K envelope to within a degree. The reference's bound binds at essentially
+the same place the cap was reaching for, and agrees with ground truth by
+construction instead of by accident.
+
+*Does the failure mode survive the realistic sampler.* On `cod/data/realistic.py`
+the hot-spot reaches 179.8 degC against the 187.2 degC where the cap first touches
+acetylene, so 0 of 100 cases activate it, against 8 of 100 on the old seed-999 set.
+It does not survive. The fix is deliberately **not** made conditional on that: a
+benchmark whose reference and model integrate different equations is invalid
+whether or not the current sample happens to notice, and the sampler is not frozen
+yet, so relying on it to keep the discrepancy dormant would be building on
+something still under argument.
+
+The alternative — capping the reference to match the model — was rejected. It
+makes ground truth non-Arrhenius above a species-dependent threshold with no
+mechanism behind it, requires regenerating every label, and leaves the benchmark
+measuring kinetics that no standard describes.
+
+Measured, 4000 random states spanning the whole reachable box in float64
+(`audit_port/scripts/14_arrhenius_clamp.py` Q6): before, 996 rows disagreed by up
+to 100% of the derivative; after, 0 rows disagree and the max relative difference
+is 5.5e-14.
+
+### J-55 Fix 6 moves Gate 1, so it gets the fix-1 treatment
+
+Unlike fixes 2-5 this one is on the evaluation path — `_gas_integral` *is* the gas
+prediction — so it moves Gate 1 with no retrain. Gate 1 overall 1.49% -> 1.26%,
+`c_C2H2` MAE 0.5926 -> 0.1138 ppm (5.2x), cases under 10% from 99 to 100. Six of
+the 100 cases move; the other 94 are bit-identical.
+
+Eight cases have a true hot-spot above 187.2 degC but only six move, because the
+quadrature runs on the model's *predicted* top-oil grid rather than the true one.
+Both numbers are reported rather than the convenient one.
+
+**The checkpoint is invalid again.** `fast_rhs_torch` is the physics residual, so
+the training objective changed: the stored weights were fitted against a residual
+whose acetylene channel saturated above 187.2 degC and no longer does. This is a
+different reason from fixes 1, 4 and 5 — the sampled distribution is untouched, so
+no new `DISTRIBUTION_FREEZE.md` hash is needed for this fix alone.
+
+Escape hatch follows the fix-1 pattern exactly: `legacy_V_clamp` is a plain
+attribute, not a buffer, so loading a v57 checkpoint cannot silently switch the
+kinetics back. `scripts/verify_phase1.py` passes `legacy_V_clamp=True` alongside
+`theta_ss_mode="formula_C"` and all three gates still pass unchanged.
+
+### J-56 Two dead clamps removed, and the diagnostic repointed
+
+`chi_monotonicity_loss` and `chi_rate_loss_v10` also carried `.clamp(max=1e4)`.
+Both are unreachable: `compute_theta_HS_torch` clamps theta_HS at 200 degC, where
+V_arr for `E_a = 1` is 1740.7. Removing them is bit-identical and was verified as
+such before doing it. Recorded rather than done silently, because "this clamp never
+fires" is exactly the kind of claim that should carry its arithmetic.
+
+`clamp_frac_V_arr_max` in the loss diagnostics is kept — the v57 cap is still
+reachable through `legacy_V_clamp` — and `clamp_frac_T_HS_max` is added next to it,
+since the temperature envelope is now the live bound and an unreported bound is how
+this discrepancy survived three versions in the first place.
+
+### J-57 `daily_mean.arrhenius` stays unclamped on both ends
+
+It now agrees with the model as well as the reference, so its old "the model
+clamps and the reference does not" note is gone. The temperature envelope is
+deliberately *not* applied there either: the Jensen measurements live around
+100 degC where it is inert, and adding it would silently flatten any future
+measurement taken outside the envelope instead of making it visible.

@@ -125,6 +125,12 @@ def fast_rhs_np(x, K, theta_a):
     State: [theta_TO, c_H2, c_C2H2, c_C2H4, c_CO, c_CO2].
     `pd_factor_np(K)` is applied to gen[1] (C2H2), which lands at index 2 of the
     returned derivative array.
+
+    The Arrhenius factor is bounded here by bounding its argument:
+    `np.clip(theta_HS + 273.15, 313.15, 573.15)`, a [40, 300] degC envelope on
+    the temperature the kinetics are evaluated at. Inside it the rate is pure
+    Arrhenius, unbounded. This is the definition of the benchmark, and since
+    Phase 2 fix 6 the torch paths carry the same two numbers (DECISIONS N-1).
     """
     theta_TO = x[0]
     dgas = x[1:6]
@@ -187,15 +193,39 @@ def _torch_consts(device, dtype=torch.float32):
     return _TORCH_CONST_CACHE[key]
 
 
-def fast_rhs_torch(x, u):
+# The reference's Arrhenius envelope, from `fast_rhs_np`:
+#     T_HS_K = np.clip(theta_HS + 273.15, 313.15, 573.15)
+# i.e. the kinetics are evaluated on a bounded temperature range of [40, 300]
+# degC and are pure Arrhenius inside it. PHASE 2 FIX 6 makes the torch paths use
+# the same two numbers instead of the rate cap they had. See `fast_rhs_torch`.
+T_HS_K_MIN = 313.15
+T_HS_K_MAX = 573.15
+
+# The v57 rate cap, retained only so the Phase 1 gates can reproduce the stored
+# checkpoints' arithmetic. Never used by default. See PORT_LOG J-54.
+LEGACY_V_ARR_CAP = 1e4
+
+
+def fast_rhs_torch(x, u, legacy_V_clamp: bool = False):
     """Differentiable counterpart of `fast_rhs_np`, used by the physics loss.
 
     `x` is (B, 6); `u` is (B, 2) holding [K, theta_a] interpolated at the
-    collocation time. Two clamps here can hide behaviour and are reported by
-    the training loop as `clamp_frac_*` (audit §8.4):
+    collocation time.
+
+    PHASE 2 FIX 6 (DECISIONS N-1). v57 bounded the Arrhenius factor here with
+    `V_arr.clamp(max=1e4)` while `fast_rhs_np`, which generates every label, has
+    no such cap — it bounds the *temperature* at [313.15, 573.15] K instead. The
+    two were therefore integrating different kinetics, and the divergence starts
+    at a different temperature for every species (187.2 degC for C2H2, 356.7 for
+    CO2), because a single cap on a dimensionless rate is not a temperature
+    statement. The torch path now carries the reference's envelope and no rate
+    cap, so the two agree exactly. `legacy_V_clamp=True` restores the v57
+    arithmetic for the Phase 1 gates.
+
+    Clamps remaining on this path, reported by the training loop as
+    `clamp_frac_*` (audit §8.4):
       * `Rf.clamp(0.8, 1.5)` on the ETC resistance correction,
-      * `V_arr.clamp(max=1e4)` on the Arrhenius factor,
-      * `T_HS_K.clamp(min=313.15)`.
+      * `T_HS_K.clamp(313.15, 573.15)` — the reference's own envelope.
     """
     k_gen_t, k_dis_t, E_act_t = _torch_consts(x.device, x.dtype)
 
@@ -212,7 +242,10 @@ def fast_rhs_torch(x, u):
     R_eff1 = R_load * Rf1
     fac_m1 = ((1.0 + K ** 2 * R_eff1) / (1.0 + R_load)) ** m_exp
     theta_HS = theta_TO + DTheta_HS_R * fac_m1
-    T_HS_K = (theta_HS + 273.15).clamp(min=313.15)
+    if legacy_V_clamp:
+        T_HS_K = (theta_HS + 273.15).clamp(min=T_HS_K_MIN)
+    else:
+        T_HS_K = (theta_HS + 273.15).clamp(T_HS_K_MIN, T_HS_K_MAX)
 
     # Thermal ODE
     Rf_n = (1.0 + alpha_Cu * (theta_HS - T_HS_ref_C)).clamp(0.8, 1.5)
@@ -221,7 +254,9 @@ def fast_rhs_torch(x, u):
     d0 = (1.0 / tau_oil) * (DTheta_oil_R * fac_n - (theta_TO - theta_a))
 
     # Gas ODEs
-    V_arr = torch.exp(B_aging * E_act_t * (1.0 / T_ref - 1.0 / T_HS_K)).clamp(max=1e4)
+    V_arr = torch.exp(B_aging * E_act_t * (1.0 / T_ref - 1.0 / T_HS_K))
+    if legacy_V_clamp:
+        V_arr = V_arr.clamp(max=LEGACY_V_ARR_CAP)
     gen = k_gen_t * V_arr
     excess = torch.clamp(K - K_PD_onset, min=0.0)
     pd_fac = 1.0 + PD_gain * excess ** 2
@@ -324,6 +359,7 @@ __all__ = [
     "tau_oil", "DTheta_oil_R", "DTheta_HS_R", "R_load", "n_exp", "m_exp",
     "theta_a0", "alpha_Cu", "T_HS_ref_C", "K_PD_onset", "PD_gain",
     "B_aging", "T_ref", "T_life_min", "k0_aging", "DP0", "DP_EOL",
+    "T_HS_K_MIN", "T_HS_K_MAX", "LEGACY_V_ARR_CAP",
     "GAS_NAMES", "N_GAS", "k_gen", "k_dis", "E_act", "IEC_ATTENTION",
     "STATE_DIM_FAST", "STATE_NAMES_FAST", "TW", "N_SENSORS",
     "hot_spot_np", "hot_spot_ETC_np", "pd_factor_np",

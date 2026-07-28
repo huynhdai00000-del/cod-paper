@@ -75,9 +75,13 @@ def activation_energies_kJ() -> dict[str, float]:
 def arrhenius(theta_HS_C, e_act) -> np.ndarray:
     """V_arr = exp(B_aging * e_act * (1/T_ref - 1/T_HS)).
 
-    Deliberately unclamped, matching `fast_rhs_np`, the reference ODE. The model
-    path in `cod/models/cod.py` clamps at 1e4 and the reference does not — see
-    DECISIONS N-1. Anything measured here is measured against the reference.
+    Deliberately unclamped, matching `fast_rhs_np`, the reference ODE. Since
+    Phase 2 fix 6 the model path in `cod/models/cod.py` agrees: it bounds the
+    temperature at [313.15, 573.15] K, as the reference does, rather than capping
+    the rate (DECISIONS N-1, now resolved). Not even the temperature bound is
+    applied here, because the Jensen measurements live around 100 degC where it
+    is inert, and applying it would silently flatten any future measurement taken
+    outside the envelope instead of making it visible.
     """
     T_HS_K = np.asarray(theta_HS_C, dtype=float) + 273.15
     e = np.asarray(e_act, dtype=float)

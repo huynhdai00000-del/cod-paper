@@ -105,7 +105,7 @@ def main() -> int:
         cod = CODOperator(state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS, d_h=128,
                           p=64, n_layers=4, n_exp_feats=12, T=TW,
                           x_mean=ts.x_mean, x_std=ts.x_std,
-                          theta_ss_mode="formula_C").to(device)
+                          theta_ss_mode="formula_C", legacy_V_clamp=True).to(device)
         ckpt = torch.load(ART / "transformer_pideepOnet_v57.pt",
                           map_location=device, weights_only=False)
         cod.load_state_dict(ckpt["model_state_dict"], strict=True)
@@ -173,7 +173,7 @@ def main() -> int:
                                 d_h=max(64, p * 2), p=p, n_layers=4,
                                 n_exp_feats=12, T=TW,
                                 x_mean=ts.x_mean, x_std=ts.x_std,
-                                theta_ss_mode="formula_C").to(device)
+                                theta_ss_mode="formula_C", legacy_V_clamp=True).to(device)
             m_cod.load_state_dict(
                 torch.load(ART / f"sweep_cod_p{p}.pt", map_location=device,
                            weights_only=False), strict=True)

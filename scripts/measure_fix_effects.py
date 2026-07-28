@@ -50,13 +50,20 @@ from cod.models.cod import CODOperator, cod_predict
 ART = ROOT / "reference" / "artifacts"
 
 
-def gate1(theta_ss_mode: str, ic_formula, label: str, device) -> dict:
-    """Run Gate 1 under a given (IC formula, model attractor) combination."""
+def gate1(theta_ss_mode: str, ic_formula, label: str, device,
+          legacy_V_clamp: bool = True) -> dict:
+    """Run Gate 1 under a given (IC formula, model attractor, kinetics) combination.
+
+    `legacy_V_clamp` defaults to True here, not to the package default, because
+    every caller below is measuring a *departure* from v57 and the v57 arm must be
+    v57 in every respect. Fix 6 is the one that toggles it.
+    """
     ts = load_training_set(ART / "transformer_training_v57.npz")
     cod = CODOperator(state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS, d_h=128,
                       p=64, n_layers=4, n_exp_feats=12, T=TW,
                       x_mean=ts.x_mean, x_std=ts.x_std,
-                      theta_ss_mode=theta_ss_mode).to(device)
+                      theta_ss_mode=theta_ss_mode,
+                      legacy_V_clamp=legacy_V_clamp).to(device)
     ckpt = torch.load(ART / "transformer_pideepOnet_v57.pt", map_location=device,
                       weights_only=False)
     cod.load_state_dict(ckpt["model_state_dict"], strict=True)
@@ -71,6 +78,8 @@ def gate1(theta_ss_mode: str, ic_formula, label: str, device) -> dict:
         "tv": r.tv_pct,
         "lt10": r.n_within_10pct,
         "mae_TO": float(r.mae_abs[:, 0].mean()),
+        "mae_abs": r.mae_abs.mean(axis=0).tolist(),
+        "mae_abs_per_case": r.mae_abs,
     }
 
 
@@ -308,6 +317,107 @@ def main() -> int:
               "discrepancy a reviewer checks.\n")
     print(f"  min K: v57 {K_v57.min():.6f} -> fixed {K_fix.min():.6f}")
 
+    # ── Fix 6 ─────────────────────────────────────────────────────────────
+    md.append("## Fix 6 — the Arrhenius envelope: bound the temperature, not the rate\n")
+    print("\n=== fix 6: V_arr clamp ===")
+    f6 = gate1("formula_C", formula_A,
+               "fix 6 (reference Arrhenius envelope)", device,
+               legacy_V_clamp=False)
+    print(f"  overall {base['overall']:.2f}% -> {f6['overall']:.2f}%")
+
+    md.append("Gate 1 movement: **yes.** This one acts on the *evaluation* path — "
+              "`CODOperator._gas_integral` is the model's entire gas prediction — "
+              "so it moves Gate 1 without a retrain, like fix 1 and unlike 2-5.\n")
+    md.append("v57 capped the Arrhenius factor at `V_arr.clamp(max=1e4)` in "
+              "`fast_rhs_torch` and in `_gas_integral`. `fast_rhs_np`, which "
+              "generates every label through RK45, has no such cap: it bounds the "
+              "*temperature* at `np.clip(theta_HS + 273.15, 313.15, 573.15)` and is "
+              "pure Arrhenius inside that envelope. Reference and model were "
+              "integrating different kinetics (DECISIONS N-1).\n")
+    md.append("Where a single rate cap actually bites, per species — computed from "
+              "the code's own constants:\n")
+    md.append("| state | Ea kJ/mol | theta_HS at V_arr = 1e4 |")
+    md.append("|---|---|---|")
+    from cod.data.physics import B_aging as _B, E_act as _E, T_ref as _Tr, GAS_NAMES
+    for nm, e in list(zip(GAS_NAMES, _E)) + [("DP", 1.0)]:
+        inv = 1.0 / _Tr - np.log(1e4) / (_B * e)
+        md.append(f"| `{nm}` | {e * _B * 8.314 / 1000:.1f} | "
+                  f"{1.0 / inv - 273.15:.1f} degC |")
+    md.append("\nOne constant, a 170 degC spread in the temperature it enforces. "
+              "That is the argument against it: no saturation mechanism caps five "
+              "different reactions at the same dimensionless rate. A physical bound "
+              "on Arrhenius kinetics is a statement about temperature — above about "
+              "300 degC the oil is pyrolysing and this kinetic model no longer "
+              "describes anything — and the reference already carries exactly that "
+              "bound.\n")
+    md.extend(row("fix 6", base, f6))
+    md.append("")
+    md.append("Absolute units, which is where the movement is legible:\n")
+    md.append("| state | before (v57) MAE | after (fixed) MAE | ratio |")
+    md.append("|---|---|---|---|")
+    unit = ["degC"] + ["ppm"] * 5
+    for i, nm in enumerate(STATE_NAMES_FAST):
+        a_, b_ = base["mae_abs"][i], f6["mae_abs"][i]
+        md.append(f"| `{nm}` | {a_:.6g} {unit[i]} | {b_:.6g} {unit[i]} | "
+                  f"{(b_ / a_ if a_ else float('nan')):.3f} |")
+    d_case = np.abs(f6["mae_abs_per_case"] - base["mae_abs_per_case"]).max(axis=1)
+    n_moved = int((d_case > 1e-9).sum())
+    md.append(f"\n`c_C2H2` is the state the cap was distorting and its MAE falls by "
+              f"{base['mae_abs'][2] / f6['mae_abs'][2]:.1f}x. Eight of the 100 "
+              "seed-999 cases carry a true hot-spot above the 187.2 degC where the "
+              f"cap first touches acetylene; {n_moved} of them move the model's own "
+              "prediction, since the quadrature runs on the *predicted* top-oil "
+              "grid, not the true one. The remaining 94 are bit-identical. The "
+              "affected cases are the ones audit M-9's initial conditions drive to a "
+              "237 degC hot-spot.\n")
+    md.append("Agreement between the two implementations, 4000 random states "
+              "spanning the whole reachable box in float64 "
+              "(`audit_port/scripts/14_arrhenius_clamp.py` Q6):\n")
+    md.append("| `fast_rhs_torch` variant | max rel. diff vs `fast_rhs_np` | "
+              "rows disagreeing |")
+    md.append("|---|---|---|")
+    md.append("| v57 (rate cap) | 9.998e-01 | 996 / 4000 |")
+    md.append("| fixed (temperature envelope) | 5.520e-14 | **0 / 4000** |")
+    md.append("\nA quarter of the box disagreed, by up to 100% of the derivative. "
+              "After the fix the two agree to float64 round-off everywhere, which is "
+              "the property a benchmark needs and this one did not have.\n")
+    md.append("**This invalidates the checkpoint again.** `fast_rhs_torch` is the "
+              "physics residual, so the training objective changed: the stored "
+              "weights were fitted against a residual whose acetylene channel "
+              "saturated above 187.2 degC and no longer does. The numbers above are "
+              "not a claim that either model is better — they measure how far the "
+              "v57 weights sit from the corrected kinetics.\n")
+    md.append("What the cap was protecting against, and whether the failure mode "
+              "survives — `audit_port/scripts/14_arrhenius_clamp.py`:\n")
+    md.append("* Not overflow. `exp(B*e*(1/T_ref - 1/T))` is increasing in T with "
+              "supremum `exp(B*e/T_ref)`, which is 54.83 in the exponent for C2H2, "
+              "its largest value across the six states. float32 `exp` overflows at "
+              "88.7. The factor cannot overflow at any temperature, finite or "
+              "infinite, so the cap was never an overflow guard.\n")
+    md.append("* It was a magnitude guard on an unbounded network output, and the "
+              "reference's own envelope is a strictly better one. The physics loss "
+              "already clamps the predicted state at `STATE_CLAMP_HI[0] = 200` degC "
+              "top-oil; the worst hot-spot constructible from that corner is 300.6 "
+              "degC at K = 1.5, which is the 573.15 K envelope to within a degree. "
+              "The reference bound therefore binds at essentially the same place the "
+              "old cap was reaching for, while agreeing with ground truth by "
+              "construction.\n")
+    md.append("* On the operationally realistic sampler the question is moot: the "
+              "hot-spot reaches 179.8 degC against the 187.2 degC where the cap "
+              "first touched C2H2, so **0 of 100** cases activate it, against 8 of "
+              "100 on the old seed-999 set. The failure mode the cap addressed does "
+              "not arise on the distribution the benchmark is moving to — but the "
+              "fix is not conditional on that, because a benchmark whose reference "
+              "and model solve different equations is invalid whether or not the "
+              "current sample happens to notice.\n")
+    md.append("The alternative — capping the reference instead — was rejected. It "
+              "would make the ground truth non-Arrhenius above a species-dependent "
+              "temperature with no mechanism behind the threshold, require "
+              "regenerating every label, and leave the benchmark measuring a "
+              "kinetics no standard describes. Between an arbitrary rate cap and a "
+              "stated temperature envelope, the envelope is the defensible object, "
+              "and it is the one already in the reference.\n")
+
     # ── Summary ───────────────────────────────────────────────────────────
     md.append("## Summary\n")
     md.append("| fix | moves Gate 1? | measured effect | checkpoint still valid? |")
@@ -326,11 +436,19 @@ def main() -> int:
               f"distribution changed** |")
     md.append(f"| 5 step clip | no | min training K {K_v57.min():.4f} -> "
               f"{K_fix.min():.4f} | **no — training distribution changed** |")
+    md.append(f"| 6 Arrhenius envelope | **yes** | overall "
+              f"{base['overall']:.1f}% -> {f6['overall']:.1f}%, `c_C2H2` MAE "
+              f"{base['mae_abs'][2]:.4g} -> {f6['mae_abs'][2]:.4g} ppm, "
+              f"{n_moved}/100 cases moved | **no — the physics residual "
+              f"changed** |")
     md.append("")
     md.append("Fixes 1, 4 and 5 all change the training distribution, so the "
               "frozen distribution hash must be re-established and recorded in "
               "`DISTRIBUTION_FREEZE.md` before the first retrain. Fixes 2 and 3 "
-              "leave the distribution untouched.")
+              "leave the distribution untouched. Fix 6 leaves the sampled "
+              "distribution untouched but changes the equation the labels and the "
+              "physics residual both refer to, which invalidates the checkpoint for "
+              "a different reason and does not need a new distribution hash.")
     md.append("")
 
     (ROOT / args.out).write_text("\n".join(md) + "\n", encoding="utf-8")

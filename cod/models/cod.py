@@ -34,8 +34,11 @@ from cod.data.physics import (
     DTheta_oil_R,
     E_act,
     K_PD_onset,
+    LEGACY_V_ARR_CAP,
     PD_gain,
     R_load,
+    T_HS_K_MAX,
+    T_HS_K_MIN,
     T_HS_ref_C,
     T_ref,
     TW,
@@ -87,7 +90,8 @@ class CODOperator(nn.Module):
     def __init__(self, state_dim: int = 6, n_sensors: int = 100, d_h: int = 128,
                  p: int = 64, n_layers: int = 4, n_exp_feats: int = 12,
                  T: float = TW, x_mean=None, x_std=None,
-                 theta_ss_mode: str = "true_fixed_point"):
+                 theta_ss_mode: str = "true_fixed_point",
+                 legacy_V_clamp: bool = False):
         super().__init__()
         if theta_ss_mode not in THETA_SS_MODES:
             raise ValueError(f"theta_ss_mode must be one of {THETA_SS_MODES}")
@@ -95,6 +99,10 @@ class CODOperator(nn.Module):
         # the state_dict and loading a v57 checkpoint will not silently reset it.
         # Pass "formula_C" whenever a v57 checkpoint is loaded.
         self.theta_ss_mode = theta_ss_mode
+        # PHASE 2 FIX 6 (DECISIONS N-1). Same treatment: not a buffer, so a v57
+        # checkpoint cannot silently switch the kinetics back. Pass True together
+        # with theta_ss_mode="formula_C" when reproducing a stored checkpoint.
+        self.legacy_V_clamp = legacy_V_clamp
         self.state_dim = state_dim
         self.p_dim = p
         self.n_exp_feats = n_exp_feats
@@ -306,8 +314,15 @@ class CODOperator(nn.Module):
 
         c_i(t) = c_i(0) + trapz_0^t k_gen_i V_arr_i(theta_HS(s)) ds - k_dis_i c_i(0) t
 
-        Two clamps live on this path: `Rf.clamp(0.8, 1.5)` and
-        `V_arr.clamp(max=1e4)`, plus `T_HS_K.clamp(min=313.15)`.
+        PHASE 2 FIX 6 (DECISIONS N-1). This quadrature is the model's entire gas
+        prediction, so a cap here is a cap on the answer. It carried
+        `V_arr.clamp(max=1e4)`; the reference ODE that produced every label caps
+        the temperature at 573.15 K instead and never caps the rate. The
+        quadrature now uses the reference's envelope, so model and ground truth
+        integrate the same kinetics. `legacy_V_clamp=True` restores v57.
+
+        Clamps remaining: `Rf.clamp(0.8, 1.5)` and
+        `T_HS_K.clamp(313.15, 573.15)`, both matching `fast_rhs_np`.
         """
         ns = theta_TO_grid.shape[1]
         B = t.shape[0]
@@ -332,10 +347,15 @@ class CODOperator(nn.Module):
         Rf = (1.0 + ac * (th_HS0 - Tr)).clamp(0.8, 1.5)
         fac_m1 = ((1.0 + K_s ** 2 * R * Rf) / (1.0 + R)) ** me
         theta_HS_s = theta_TO_grid + Dhs * fac_m1
-        T_HS_K_s = (theta_HS_s + 273.15).clamp(313.15)
+        if self.legacy_V_clamp:
+            T_HS_K_s = (theta_HS_s + 273.15).clamp(T_HS_K_MIN)
+        else:
+            T_HS_K_s = (theta_HS_s + 273.15).clamp(T_HS_K_MIN, T_HS_K_MAX)
         V_arr_s = torch.exp(
             B_aging * self.E_act_buf * (1.0 / T_ref - 1.0 / T_HS_K_s.unsqueeze(-1))
-        ).clamp(max=1e4)
+        )
+        if self.legacy_V_clamp:
+            V_arr_s = V_arr_s.clamp(max=LEGACY_V_ARR_CAP)
         pd_s = 1.0 + PD_gain * (K_s - K_PD_onset).clamp(min=0.0) ** 2
         V_arr_s = V_arr_s.clone()
         V_arr_s[:, :, 1] = V_arr_s[:, :, 1] * pd_s
