@@ -33,8 +33,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from cod.config import load_config
-from cod.data.generate import build_test_set, generate_training_set, load_training_set
+from cod.data.generate import (build_test_set, generate_realistic_training_set,
+                               generate_training_set, load_training_set)
 from cod.data.physics import STATE_DIM_FAST, STATE_NAMES_FAST
+from cod.data.realistic import RealisticParams
 from cod.data.steady_state import formula_A, true_fixed_point_np
 from cod.eval.benchmark import evaluate
 from cod.eval.metrics import TRANSFORMER_STATES, evaluate_state, report
@@ -185,25 +187,72 @@ def main() -> int:
               "The numbers below prove the wiring runs; they are not results.")
 
     # ── Data ───────────────────────────────────────────────────────────────
+    # Which sampler is a config decision inside the hashed block, so the frozen
+    # hash records which one produced the data. `realistic` is the default for
+    # new work; `v57` exists to reproduce transformer_training_v57.npz and the
+    # Phase 1 gates, and its ranges are hardcoded on purpose (see
+    # `generate_training_set`).
+    # The test set is the seed-999 benchmark and is built the same way whichever
+    # sampler drew the training data, so its IC formula is read here rather than
+    # inside a sampler branch.
     v57_ic = dist.get("steady_state_formula") == "A"
     ic_formula = formula_A if v57_ic else true_fixed_point_np
-    phase_range = dist.get("ambient_phase", [0.0, 6.283185])
-    randomise_phase = float(phase_range[1]) > float(phase_range[0])
-    clip_step = True
-    for fam in dist.get("profile_families", []):
-        if fam.get("kind") == "step" and fam.get("clipped") is False:
-            clip_step = False
+
+    sampler = dist.get("sampler")
+    if sampler is None:
+        raise ValueError(
+            f"{args.config}: distribution.sampler is missing.\n"
+            "  Declare it explicitly — which sampler drew the data is part of the\n"
+            "  distribution, so it belongs inside the hashed block:\n"
+            "    sampler: {kind: realistic, params: {...}}   # new work\n"
+            "    sampler: {kind: v57}                        # reproduce v57")
+    kind = sampler.get("kind")
+
+    data_provenance = {"source": args.train_data or "generated",
+                       "sampler": kind}
 
     if args.train_data:
         ts = load_training_set(args.train_data)
         print(f"[data] loaded {len(ts)} ICs from {args.train_data}")
-    else:
+    elif kind == "realistic":
+        params = RealisticParams.from_config(sampler.get("params", {}))
+        ts = generate_realistic_training_set(n_ic=n_ic,
+                                             seed=int(dist.get("seed", 42)),
+                                             params=params)
+        data_provenance["realistic_params"] = params.to_config_dict()
+        print(f"[data] generated {len(ts)} ICs  realistic sampler  "
+              f"(cycle_period={params.cycle_period:g} min, "
+              f"K_amp={params.K_amp}, hot_spot_mean={params.hot_spot_mean:g})")
+    elif kind == "v57":
+        if sampler.get("params"):
+            raise ValueError(
+                f"{args.config}: distribution.sampler.kind is 'v57' but params "
+                "were given.\n  The v57 sampler's ranges are hardcoded in "
+                "cod/data/profiles.py so that 'reproduces v57' cannot be changed "
+                "by editing a YAML file. Remove the params block, or switch to "
+                "kind: realistic.")
+        phase_range = dist.get("ambient_phase", [0.0, 6.283185])
+        randomise_phase = float(phase_range[1]) > float(phase_range[0])
+        clip_step = True
+        for fam in dist.get("profile_families", []):
+            if fam.get("kind") == "step" and fam.get("clipped") is False:
+                clip_step = False
         ts = generate_training_set(n_ic=n_ic, seed=int(dist.get("seed", 42)),
                                    randomise_ambient_phase=randomise_phase,
                                    steady_state=ic_formula, clip_step=clip_step)
-        print(f"[data] generated {len(ts)} ICs  "
+        data_provenance.update({
+            "steady_state_formula": "A" if v57_ic else "true_fixed_point",
+            "randomise_ambient_phase": randomise_phase,
+            "clip_step": clip_step,
+        })
+        print(f"[data] generated {len(ts)} ICs  v57 sampler (DEPRECATED, "
+              f"reproduction only)  "
               f"(steady_state={'A' if v57_ic else 'true_fixed_point'}, "
               f"randomise_phase={randomise_phase}, clip_step={clip_step})")
+    else:
+        raise ValueError(
+            f"{args.config}: distribution.sampler.kind is {kind!r}; "
+            "expected 'realistic' or 'v57'.")
 
     # ── Model ──────────────────────────────────────────────────────────────
     if args.theta_ss is not None:
@@ -291,12 +340,11 @@ def main() -> int:
                 zip(STATE_NAMES_FAST, bench.floor_hit_frac().round(4).tolist())),
             "mae_physical_units": {k: v.to_dict() for k, v in phys.items()},
         },
-        "data_provenance": {
-            "source": args.train_data or "generated",
-            "steady_state_formula": "A" if v57_ic else "true_fixed_point",
-            "randomise_ambient_phase": randomise_phase,
-            "clip_step": clip_step,
-        },
+        # Sampler-specific, so that a run.json never records flags belonging to a
+        # sampler it did not use. The realistic branch writes the resolved
+        # parameters rather than the flags, which is the record that matters:
+        # it is what the distribution hash is a hash of.
+        "data_provenance": data_provenance,
     }
     # loss_history can be 25,000 floats; keep the file readable.
     hist = extra["outcome"].pop("loss_history", [])

@@ -37,6 +37,7 @@ from cod.data.physics import (
     fast_rhs_np,
 )
 from cod.data.profiles import N_IC, make_sensor_profile, sample_consistent_ic
+from cod.data.realistic import build_realistic_set
 from cod.data.steady_state import true_fixed_point_torch
 
 TRAIN_FILE = "transformer_training_v57.npz"
@@ -118,10 +119,47 @@ class TrainingSet:
         return self.theta_ss
 
 
+def generate_realistic_training_set(n_ic: int, seed: int,
+                                    params) -> TrainingSet:
+    """Training set from the operationally realistic sampler (`realistic.py`).
+
+    This is the default path since the sampler was put on the config: every knob
+    comes from the hashed `distribution.sampler.params` block via
+    `RealisticParams.from_config`, so there is no parameter the frozen hash does
+    not cover.
+
+    Unlike `generate_training_set` below, the day is drawn first and the initial
+    condition is derived from it, which is the whole point of the sampler — the
+    IC is the periodic state of that day's own load pattern rather than an
+    independent draw (audit M-9).
+    """
+    x0s, sensors = build_realistic_set(n_ic, seed, params)
+    x_mean = x0s.mean(axis=0)
+    x_std = x0s.std(axis=0) + 1e-8
+    return TrainingSet(x0s=x0s, sensors=sensors, x_mean=x_mean, x_std=x_std,
+                       theta_ss=steady_state_on_grid(sensors))
+
+
 def generate_training_set(n_ic: int = N_IC, seed: int = 42,
                           randomise_ambient_phase: bool = True,
                           steady_state=None, clip_step: bool = True) -> TrainingSet:
-    """Regenerate the training set from scratch.
+    """DEPRECATED for new work: the v57-era sampler, kept to reproduce v57.
+
+    **Do not point a new experiment at this.** Audit M-9 is against it: it draws
+    every IC before any profile, so `theta_TO(0)` is
+    `steady_state(K, theta_a) + U(-30, 30)` with `K` and `theta_a` unrelated to
+    the load profile that then drives the window. `generate_realistic_training_set`
+    is the path for anything whose numbers go in the paper, and
+    `configs/example_cod_seed1.yaml` selects it.
+
+    This path survives for exactly one reason: `configs/v57_faithful.yaml` and the
+    Phase 1 gates have to reproduce `transformer_training_v57.npz` byte for byte.
+    Its ranges are therefore **deliberately hardcoded** in
+    `cod/data/profiles.py` (`make_sensor_profile`, `sample_consistent_ic`) and are
+    deliberately *not* configurable. Making them configurable would let an edit to
+    a YAML file silently change what "reproduces v57" means, which is the opposite
+    of what a reproduction gate is for. They are a frozen historical artifact, not
+    a second source of truth competing with the config.
 
     n12 cell 0 L1002-L1006: one RandomState(42) draws all ICs first, then all
     profiles. Not interleaved — replaying it in any other order gives a different
@@ -130,7 +168,7 @@ def generate_training_set(n_ic: int = N_IC, seed: int = 42,
     To reproduce `transformer_training_v57.npz` exactly, pass
     `steady_state=formula_A`, `randomise_ambient_phase=False` and
     `clip_step=False`. The defaults are the Phase 2 fixed behaviour and produce a
-    different dataset.
+    different dataset again — neither is the realistic sampler.
     """
     rng = np.random.RandomState(seed)
     x0s = np.array([sample_consistent_ic(rng, steady_state=steady_state)
@@ -237,6 +275,7 @@ def save_training_set(ts: TrainingSet, path: str | Path) -> None:
 __all__ = [
     "TRAIN_FILE", "TrainingSet", "TestCase", "steady_state_on_grid",
     "save_training_set",
-    "rk45_ground_truth", "generate_training_set", "load_training_set",
+    "rk45_ground_truth", "generate_training_set",
+    "generate_realistic_training_set", "load_training_set",
     "build_test_set", "solve_test_set",
 ]

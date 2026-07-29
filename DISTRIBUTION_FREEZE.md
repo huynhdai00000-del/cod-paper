@@ -1,103 +1,137 @@
 # Distribution freeze
 
-Frozen 2026-07-29, after `scripts/run.py` was verified to complete end to end.
-A hash recorded against a package that cannot run is worthless, so the gate came
-first: see §4.
+Re-frozen 2026-07-29 after the realistic sampler was put on the config path.
+The previous freeze, recorded earlier the same day, is superseded — it hashed a
+block that the training path largely did not read. See
+`CHANGELOG_DISTRIBUTION.md` for the supersession record and the old hashes.
+
+The gate came first, both times: a hash recorded against a package that cannot
+run is worthless. See §4.
 
 ## 1. The frozen hashes
 
-`distribution_hash` is `canonical_hash(raw["distribution"])` — the canonical hash
-of the `distribution` block alone, reported separately from the whole-config hash
-so that "the training distribution was frozen before any model was trained" is a
-checkable claim rather than an assertion (`cod/config.py`).
+`distribution_hash` is `canonical_hash(raw["distribution"])`, reported separately
+from the whole-config hash so that "the training distribution was frozen before
+any model was trained" is checkable rather than asserted (`cod/config.py`).
 
-| config | config hash | distribution hash |
-|---|---|---|
-| `configs/example_cod_seed1.yaml` | `2b2f5462ac53a64d` | **`9bf8b092546cfa30`** |
-| `configs/v57_faithful.yaml` | `c4595fcef3ae3f4b` | **`7a98d381e402e7c8`** |
+| config | sampler | config hash | distribution hash |
+|---|---|---|---|
+| `configs/example_cod_seed1.yaml` | `realistic` | `95b56b1d79ac7c40` | **`fc4cb76c3b32ec17`** |
+| `configs/v57_faithful.yaml` | `v57` | `4cc034c6b60de703` | **`3ad5f68876934c75`** |
 
-Enforce with `assert_distribution_unchanged(cfg, expected_hash)`, or on the
-command line:
+Enforce on the command line:
 
 ```
 python scripts/run.py --config configs/example_cod_seed1.yaml \
-                      --freeze-hash 9bf8b092546cfa30
+                      --freeze-hash fc4cb76c3b32ec17
 ```
 
 Any intentional change goes in `CHANGELOG_DISTRIBUTION.md` with date and reason,
 the hash here is updated, and the change is disclosed in the paper.
 
-## 2. What this hash does NOT pin — read before relying on it
+## 2. What the hash now covers, and what it still does not
 
-The name overstates the guarantee in three specific ways. All three are
-properties of the repo as it stands today, not speculation.
+**Covered, and enforced.** Every field of `RealisticParams` — all 22 — must
+appear in `distribution.sampler.params`. `RealisticParams.from_config` rejects
+the config if one is missing, so no sampler parameter can take a Python default
+that the hashed text does not state. It equally rejects a key that is *not* a
+field, which is the same failure seen from the other side: the previous config
+carried `K_base`, `ambient_base`, `ambient_amplitude` and nine `profile_families`
+that reached no sampler, so editing them moved the hash and changed no data.
+Adding a field to `RealisticParams` now breaks every config until the config
+declares it. That is intended.
 
-**2.1 It hashes YAML that the training path largely does not read.** `run.py`
-generates data with `generate_training_set(n_ic, seed, randomise_ambient_phase,
-steady_state, clip_step)`. Of the `distribution` block, only `seed`,
-`steady_state_formula`, `ambient_phase` (as the boolean "is the range
-non-empty") and one flag derived from `profile_families` reach it. The nine
-family definitions, `K_base`, `ambient_base` and `ambient_amplitude` are **not
-passed to the generator at all** — the ranges that actually apply are hardcoded
-in `cod/data/generate.py`'s `make_sensor_profile` and `sample_consistent_ic`.
-Editing `K_base: [0.5, 1.2]` in the YAML changes this hash and changes nothing
-about the data.
+It also rejects a `families`/`weights` length mismatch, weights that do not sum
+to 1 (which `rng.choice` would silently renormalise), and a family name
+`make_realistic_day` has no branch for (which would fall through to `multi_step`
+without saying so).
 
-**2.2 It does not cover the sampler code.** A distribution is defined by the
-config block *and* the code that consumes it *and* the physics constants. Fix 7
-(N-6) rewrote `cod/data/realistic.py` and changed the realised hot-spot swing
-distribution substantially — median 11.20 to 13.18 degC — without touching any
-config, so neither hash above moved. Code-level changes to a sampler are
-invisible to a config hash by construction. Git history is what pins those; this
-hash is not a substitute for it.
+**Not covered: the sampler code itself.** A config hash cannot see a change to
+`cod/data/realistic.py` that alters behaviour without altering a parameter. Fix 7
+is the worked example — it moved the median realised hot-spot swing from 11.20 to
+13.18 degC and no hash moved, because at that time no config named the sampler at
+all. That specific hole is closed (`cycle_period` is now a hashed parameter), but
+the general one is structural: git history pins the code, and this hash is not a
+substitute for it. Quote both when the paper describes the protocol.
 
-**2.3 The realistic sampler is not on the config path at all.** This is the one
-that matters most for the paper. `cod/data/realistic.py` — the fix-7 sampler,
-with the 24 h cycle, the windowing at random phase, and the day-consistent
-initial condition — is used by `audit_port/` scripts and by nothing in
-`scripts/run.py`. The `distribution` block still describes the v57-era family set
-(`flat`, `sinusoidal`, `step`, `peak_then_drop`, `tv_high_amp`, `tv_ramp_sin`),
-which is a different set of names from the realistic sampler's (`base_load`,
-`daily`, `shift_change`, `evening_peak`, …), and it carries no `cycle_period`.
+**Not covered: the test set's own ranges.** `distribution` pins what the model
+trains on. The evaluation tiers name `n_cases` and `seed`, but
+`build_test_set`'s CK and TV ranges — `U(0.4, 1.4)`, `U(0.5, 1.2)`, amplitude
+0.20, phase pi/3 — are hardcoded in `cod/data/generate.py`. That is the same
+class of gap as the one just closed, one layer over, and it is why audit B-5 and
+M-8 are recorded against the test set rather than against the sampler. Not
+changed here: the seed-999 benchmark is what every stored gate number was scored
+on, so it is frozen by being immutable rather than by being hashed.
 
-**So `9bf8b092546cfa30` freezes the distribution the smoke run trains on, which
-is not the distribution the Jensen-gap results are measured on.** The 13.18 degC
-median swing, the gap medians in `audit_port/PERIOD_FIX.md`, and the IEC
-exceedance rates all come from `build_realistic_set`, which no config describes
-and no hash here covers.
+**Not covered: physics constants.** `tau_oil`, `DTheta_oil_R`, `n_exp`, `k_gen`,
+`k_dis`, `E_act` live in `cod/data/physics.py`. O-3 and O-11 close as declared
+limitations rather than calibrations, so these are fixed by the benchmark
+definition and pinned by git, not by this hash.
 
-## 3. What to do about §2.3 before the retrain
+## 3. Two samplers, one default
 
-Not done here, because wiring a new sampler into the training path is a change to
-what gets trained and belongs with O-5, not with a freeze. In order:
+`distribution.sampler.kind` selects, and it sits inside the hashed block because
+*which sampler drew the data* is part of the distribution.
 
-1. Add a `sampler: realistic` switch to the `distribution` block with the
-   `RealisticParams` fields that matter (`cycle_period`, `K_amp`,
-   `hot_spot_mean`, the family weights) written out explicitly, so they are
-   inside the hashed block rather than in a dataclass default.
-2. Have `run.py` dispatch to `build_realistic_set` on that switch.
-3. Re-freeze, and record the new distribution hash here as the one the paper's
-   numbers belong to.
-4. Only then retrain (O-5). The retrain is what makes the freeze meaningful:
-   freezing after training is not a protocol, it is a record.
+`realistic` (default, `cod/data/realistic.py`) is the path for anything whose
+numbers go in the paper. The day is drawn first and the initial condition is the
+periodic state of that day's own load pattern read at the window's offset, which
+is what audit M-9 is about.
 
-Until step 3 lands, cite these hashes as "the configuration under which the
-package runs", not as "the frozen benchmark distribution".
+`v57` (`cod/data/profiles.py` via `generate_training_set`) exists to reproduce
+`transformer_training_v57.npz` byte for byte and to keep the Phase 1 gates
+reproducing. **Its ranges are deliberately hardcoded and deliberately not
+configurable**, and `run.py` raises if a `params` block is supplied for it. A
+reproduction gate that a YAML edit can move is not a gate; those constants are a
+frozen historical artifact, not a second source of truth competing with the
+config. `generate_training_set` is docstring-deprecated for new work.
 
-## 4. The gate this was written behind
+## 4. The gates this was written behind
 
-`scripts/run.py --config configs/example_cod_seed1.yaml --max-epochs 40
---n-ic 48 --n-test 6 --device cpu --tag smoke` completes end to end and writes
-`results/cod_transformer_cod_s1_2b2f5462ac53a64d_smoke_smoke/run.json`.
+**The knob moves the data** — `audit_port/scripts/20_verify_config_binding.py`,
+which is the direct refutation of the failure the last freeze documented:
 
-It reports `NOT CONVERGED (stop_reason=epoch_budget)` and a `state_hi` clamp
-active on 25% of samples. Both are correct at 40 epochs on 48 ICs and neither is
-a failure of the gate: the run exists to prove the wiring executes, and the
+| check | result |
+|---|---|
+| all 22 params present, extras rejected | both enforcement paths fire |
+| `cycle_period` 1440 -> 720 changes `sensors` | max abs delta **15.17** |
+| `cycle_period` 1440 -> 720 changes `x0s` | max abs delta **8.44** |
+| median load swing (half p-p) at 1440 / 720 | 0.1045 / **0.1261** |
+| same params reproduce byte-identically | yes |
+| the same edit moves the distribution hash | `fc4cb76c…` -> `cefe1e0e…` |
+| v57 path deterministic and distinct | yes |
+
+The swing figures are the physics of N-6 read back through the config: a 720 min
+period puts a whole cycle inside the 720 min window, so the window sees a larger
+load excursion. Setting `cycle_period: 720.0` reinstates the N-6 defect, and it
+is now a one-line, hash-visible, reviewable edit rather than a property of the
+code.
+
+**Phase 1 still reproduces.** `scripts/verify_phase1.py --gate 1` passes on the
+v57 path: theta_TO 1.5, c_H2 1.3, c_C2H2 2.3, c_C2H4 1.6, c_CO 1.1, c_CO2 1.1,
+overall 1.5, 99/100 under 10%. The gates read stored checkpoints and the stored
+npz directly and never load a config, so changing `v57_faithful.yaml`'s hash
+cannot affect them.
+
+**The pipeline runs end to end on both samplers.**
+`run.py --config configs/example_cod_seed1.yaml --freeze-hash fc4cb76c3b32ec17
+--max-epochs 40 --n-ic 48 --n-test 6` completes, and `run.json` records all 22
+resolved sampler parameters under `data_provenance.realistic_params`. The v57
+config completes on its own path and records its own flags instead.
+
+Both smoke runs report `NOT CONVERGED (stop_reason=epoch_budget)`, which is
+correct at 40 epochs on 48 ICs. **None of their metrics are results.** The
 package refusing to dress a 40-epoch run as a performance number is the
-convergence rule working. **None of the metrics in that run.json are results.**
+convergence rule working.
 
-Separately, `audit_port/scripts/19_verify_bias_fix.py` exercises
-`chi_lifetime_rollout` and constructs `RolloutResult` 120 times, which is the
-path that was broken when the freeze was requested (`theta_cyc_ref` declared but
-never passed, so every call raised `TypeError`). Fixed in `3a67aaf`, verified
-before this document was written.
+## 5. What has to happen next, in order
+
+1. Retrain (O-5) on `fc4cb76c3b32ec17`. Freezing after training is not a
+   protocol, it is a record; this freeze is only meaningful because nothing has
+   been trained on it yet.
+2. Re-run the swing-fidelity check (`18_swing_fidelity.py`) on the retrained
+   checkpoint. Its current numbers are v57's, scored in the v57 distribution, and
+   `SWING_FIDELITY.md` §5.3 says they must be rerun here.
+3. Re-run `19_verify_bias_fix.py`'s rollout against the retrained model to get
+   the real thermal rollout error, which O-9 left open and which decides whether
+   an end-of-life number is publishable.

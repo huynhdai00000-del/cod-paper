@@ -1409,3 +1409,95 @@ The gap table's last column was headed "gap lost" while every value in it was a
 gain, and it computes `median(pred)/median(true) - 1`, the ratio of medians,
 which is why it read +1.53% beside a median ratio of 1.0269 for `c_H2`. Renamed
 and signed so that negative means gap lost.
+
+---
+
+## Fix 9 — the realistic sampler on the config path
+
+### J-78 The freeze that certified nothing
+
+`DISTRIBUTION_FREEZE.md` recorded `9bf8b092546cfa30` in the morning and it was
+worth very little. `run.py` called `generate_training_set`, which reads `seed`,
+`steady_state_formula`, a phase boolean and one flag derived from
+`profile_families`. The block's `K_base`, `ambient_base`, `ambient_amplitude` and
+nine family definitions reached no sampler; the ranges that applied were
+hardcoded in `profiles.py`. Editing `K_base` moved the hash and changed no data.
+
+And `realistic.py` — the fix-7 sampler every Jensen number in `audit_port/` is
+computed on — was not on the config path at all. Training would have used one
+distribution and the paper reported from another, which is the mismatch the audit
+found in the manuscript. This is why the freeze was a blocker for O-5 rather than
+part of it.
+
+### J-79 `from_config` refuses in both directions, which is the whole mechanism
+
+`RealisticParams.from_config` compares the config block against
+`dataclasses.fields` and raises on **missing** keys and on **unknown** keys
+alike. Missing is the obvious one: a field absent from the hashed text would take
+a Python default and the hash would certify a distribution it never saw. Unknown
+matters just as much and is the failure J-78 describes — a knob that looks
+authoritative, moves the hash, and does nothing. It also catches a typo, which
+would otherwise leave the real field on its default while the misspelling sat
+there looking set.
+
+Adding a field to `RealisticParams` now breaks every config until the config
+declares it. Intended. Three further checks that would otherwise fail silently:
+`families`/`weights` length mismatch; weights not summing to 1 (`rng.choice`
+renormalises without a word); and a family name `make_realistic_day` has no
+branch for, which its trailing `else` would turn into `multi_step`.
+
+### J-80 Two samplers, and why the v57 one stays hardcoded
+
+`distribution.sampler.kind` is inside the hashed block, because which sampler drew
+the data is part of the distribution.
+
+The v57 path keeps its hardcoded ranges **on purpose**, and `run.py` raises if a
+`params` block is offered for it. Its job is to reproduce
+`transformer_training_v57.npz` byte for byte for the Phase 1 gates, and a
+reproduction gate that a YAML edit can move is not a gate. Those constants are a
+frozen historical artifact, not a second source of truth competing with the
+config. `generate_training_set` is deprecated in its docstring for new work and
+points at `generate_realistic_training_set`.
+
+Verified that this reasoning holds: `verify_phase1.py --gate 1` still reproduces
+Table 2 exactly (theta_TO 1.5, overall 1.5, 99/100 under 10%) after
+`v57_faithful.yaml`'s own hash changed, because the gates read stored checkpoints
+and the stored npz directly and never load a config.
+
+### J-81 Two bugs the smoke run caught that a unit test would not have
+
+Both were scope errors from the refactor, and both only appear on a full run:
+
+`ic_formula` was defined inside the v57 branch but is read later by
+`build_test_set`. The realistic path reached the evaluation and raised
+`UnboundLocalError`. The fix is that the *test set* is the seed-999 benchmark
+regardless of which sampler drew the training data, so its IC formula is resolved
+before the branch.
+
+`data_provenance` recorded `randomise_ambient_phase` and `clip_step`
+unconditionally — v57 flags, meaningless on the realistic path, and undefined
+there. Now sampler-specific: the realistic branch writes all 22 resolved
+parameters into `run.json` instead, which is the record that matters, since it is
+what the distribution hash is a hash of.
+
+### J-82 The knob demonstrably moves the data
+
+`20_verify_config_binding.py`. Setting `cycle_period: 720.0` reinstates the N-6
+defect through the config alone:
+
+| check | result |
+|---|---|
+| `cycle_period` 1440 -> 720, `sensors` | max abs delta 15.17 |
+| `cycle_period` 1440 -> 720, `x0s` | max abs delta 8.44 |
+| median load swing, half p-p | 0.1045 -> 0.1261 |
+| distribution hash | `fc4cb76c3b32ec17` -> `cefe1e0e2f9251dd` |
+| same params, regenerated | byte-identical |
+
+The swing direction is N-6's physics read back through the config: a 720 min
+period fits a whole cycle inside the 720 min window, so the window sees a bigger
+excursion. The defect is now a one-line hash-visible edit rather than a property
+of the code, which is what putting it in the config was for.
+
+New hashes: `fc4cb76c3b32ec17` (realistic) and `3ad5f68876934c75` (v57).
+Supersession recorded in `CHANGELOG_DISTRIBUTION.md`; nothing had been trained on
+the old ones.

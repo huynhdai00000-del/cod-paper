@@ -10,6 +10,16 @@ experiment:
 # which is the opposite of the freeze-before-training protocol. No entry in
 # DISTRIBUTION_FREEZE.md corresponds to it.
 distribution:
+  # The v57-era sampler. Its ranges live in cod/data/profiles.py and are
+  # deliberately hardcoded and deliberately not configurable: this config exists
+  # to reproduce transformer_training_v57.npz byte for byte, and a reproduction
+  # gate that a YAML edit can move is not a gate. `params` is rejected here.
+  #
+  # Every key below documents what that hardcoded sampler does. They are a record,
+  # not an input -- with the exception of seed, window_minutes, ambient_phase and
+  # steady_state_formula, which do reach the generator.
+  sampler:
+    kind: v57
   n_ic: 8000
   window_minutes: 720          # TW = 720 min = 12 h. The scaffold said 1440.
   n_sensors: 100

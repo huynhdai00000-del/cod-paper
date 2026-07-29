@@ -11,20 +11,53 @@ distribution:
   seed: 42
   steady_state_formula: true_fixed_point   # Phase 2 fix 1
   window_minutes: 720          # TW = 12 h; the scaffold said 1440 (PORT_LOG J-11)
-  K_base: [0.5, 1.2]
-  ambient_base: [15.0, 45.0]
-  ambient_amplitude: [0.0, 8.0]
-  ambient_phase: [0.0, 6.283185]   # was fixed at 0 in v57; randomised now
-  profile_families:
-    - {kind: flat,           weight: 0.11}
-    - {kind: ramp,           weight: 0.11}
-    - {kind: sinusoidal,     weight: 0.11, amp: [0.05, 0.40], period_rel: [0.5, 2.0]}
-    - {kind: step,           weight: 0.11}
-    - {kind: overload_spike, weight: 0.11}
-    - {kind: multi_step,     weight: 0.11}
-    - {kind: peak_then_drop, weight: 0.11}
-    - {kind: tv_high_amp,    weight: 0.11, amp: [0.30, 0.50]}
-    - {kind: tv_ramp_sin,    weight: 0.12}
+
+  # The sampler is part of the distribution, so it is named inside the hashed
+  # block rather than chosen in code. `params` must list EVERY field of
+  # RealisticParams: `from_config` rejects the config if one is missing, and
+  # equally if a key here is not a field the sampler reads. The previous version
+  # of this file carried K_base, ambient_base, ambient_amplitude and nine
+  # profile_families that reached no sampler at all — editing them moved the hash
+  # and changed nothing (DISTRIBUTION_FREEZE.md §2.1). That cannot recur silently.
+  sampler:
+    kind: realistic
+    params:
+      # Load pattern is a DAY; the 720 min window is a slice at random phase.
+      # A 12 h period here is the N-6 defect: it under-drives the thermal system
+      # by 1/sqrt(1+(omega tau)^2) and forces K_amp up to compensate.
+      cycle_period: 1440.0
+      # Operating point. The hot-spot is drawn and the load solved for, because a
+      # fleet is loaded to keep temperature in band. IEC 60076-7: rated 98 degC,
+      # normal-cyclic ceiling 120, long-time emergency 140.
+      hot_spot_mean: 86.0
+      hot_spot_sd: 11.0
+      hot_spot_bounds: [62.0, 122.0]
+      K_bounds: [0.30, 1.40]
+      # Daily load swing about the unit's own mean. Deliberately NOT rescaled to
+      # ETT: see PORT_LOG J-74 and DECISIONS O-10 §7 -- the 0.850 rescale is a
+      # scope decision about which feeder population the benchmark is about.
+      K_amp: [0.12, 0.28]
+      base_load_frac: 0.50
+      overload_K: [1.15, 1.40]
+      # Ambient: 6-16 degC diurnal peak-to-peak, random phase (Phase 2 fix 4).
+      Ta_base: [15.0, 40.0]
+      Ta_amp: [3.0, 8.0]
+      # Initial condition: spread about the day's own periodic steady state.
+      hist_sigma: 3.0
+      hist_clip: 8.0
+      sensor_sigma: 0.5
+      theta_TO_bounds: [30.0, 130.0]
+      burn_in_cycles: 3
+      # Gases: equilibrium at the day-mean hot-spot times a service factor, with
+      # a minority carrying an incipient fault.
+      service_factor: [0.45, 1.35]
+      fault_prob: 0.08
+      fault_gases: [0, 1, 2]          # H2, C2H2, C2H4
+      fault_factor: [2.0, 7.0]
+      gas_floor_frac: 0.02
+      families: [base_load, daily, ramp, shift_change, evening_peak,
+                 overload_spike, multi_step]
+      weights: [0.18, 0.22, 0.12, 0.14, 0.16, 0.08, 0.10]
 
 model:
   kind: cod

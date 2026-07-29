@@ -36,7 +36,7 @@ argued with before anything is committed to `DISTRIBUTION_FREEZE.md`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 import numpy as np
 
@@ -124,6 +124,106 @@ class RealisticParams:
                                  "evening_peak", "overload_spike", "multi_step")
     weights: tuple[float, ...] = (0.18, 0.22, 0.12, 0.14, 0.16, 0.08, 0.10)
 
+    # ── config binding ─────────────────────────────────────────────────────
+    # Every field above is a knob somebody could be tempted to widen to make a
+    # number look better, so every field above must live inside the hashed
+    # `distribution` block. `from_config` enforces that in both directions, which
+    # is the whole point: a hash that silently omits a knob is worse than no hash,
+    # because it certifies something it did not check.
+
+    _TUPLE_FIELDS = {
+        "hot_spot_bounds": float, "K_bounds": float, "K_amp": float,
+        "overload_K": float, "Ta_base": float, "Ta_amp": float,
+        "theta_TO_bounds": float, "service_factor": float,
+        "fault_gases": int, "fault_factor": float,
+        "families": str, "weights": float,
+    }
+
+    @classmethod
+    def from_config(cls, block: dict, where: str = "distribution.sampler.params"
+                    ) -> "RealisticParams":
+        """Build from a hashed config block, refusing anything incomplete.
+
+        Two checks, and both matter:
+
+        **Missing.** Every dataclass field must appear in `block`. Falling back to
+        a Python default would mean the hash certifies a distribution whose
+        parameters are not in the hashed text — exactly the failure
+        `DISTRIBUTION_FREEZE.md` §2.1 recorded, where `K_base` sat in the YAML,
+        moved the hash when edited, and reached no sampler.
+
+        **Unknown.** Any key in `block` that is not a field is also an error. That
+        is the same failure seen from the other side: a knob that looks
+        authoritative, changes the hash, and does nothing. A typo in a field name
+        would otherwise land here silently and leave the real field on its default.
+
+        Adding a field to this dataclass therefore breaks every config until the
+        config declares it. That is intended — it is what keeps the hash honest.
+        """
+        if not isinstance(block, dict):
+            raise TypeError(f"{where} must be a mapping, got {type(block).__name__}")
+
+        names = {f.name for f in fields(cls)}
+        given = set(block)
+        missing = sorted(names - given)
+        unknown = sorted(given - names)
+        if missing or unknown:
+            msg = [f"{where} does not match RealisticParams."]
+            if missing:
+                msg.append(
+                    f"  MISSING ({len(missing)}): {', '.join(missing)}\n"
+                    "    The sampler reads these. Absent from the hashed config, "
+                    "they would silently take Python defaults and the frozen hash "
+                    "would certify a distribution it never saw.")
+            if unknown:
+                msg.append(
+                    f"  UNKNOWN ({len(unknown)}): {', '.join(unknown)}\n"
+                    "    No sampler parameter has these names. Editing them moves "
+                    "the hash and changes no data. Check for a typo.")
+            raise ValueError("\n".join(msg))
+
+        kw = {}
+        for name, value in block.items():
+            if name in cls._TUPLE_FIELDS:
+                cast = cls._TUPLE_FIELDS[name]
+                if not isinstance(value, (list, tuple)):
+                    raise TypeError(f"{where}.{name} must be a list, got "
+                                    f"{type(value).__name__}")
+                kw[name] = tuple(cast(v) for v in value)
+            else:
+                kw[name] = value
+
+        p = cls(**kw)
+        if len(p.families) != len(p.weights):
+            raise ValueError(
+                f"{where}: families has {len(p.families)} entries but weights has "
+                f"{len(p.weights)}; they index each other in make_realistic_day.")
+        total = sum(p.weights)
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(f"{where}.weights sums to {total!r}, not 1.0 "
+                             "(rng.choice would renormalise it silently).")
+        unknown_fam = sorted(set(p.families) - set(KNOWN_FAMILIES))
+        if unknown_fam:
+            raise ValueError(
+                f"{where}.families contains {unknown_fam}, which "
+                "make_realistic_day has no branch for. It would fall through to "
+                "multi_step without saying so.")
+        return p
+
+    def to_config_dict(self) -> dict:
+        """The block that `from_config` would accept, for writing a config out."""
+        out = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            out[f.name] = list(v) if isinstance(v, tuple) else v
+        return out
+
+
+# Every `kind` make_realistic_day branches on. The final `else` is multi_step, so
+# an unrecognised name silently becomes multi_step; `from_config` rejects it
+# instead.
+KNOWN_FAMILIES = ("base_load", "daily", "ramp", "shift_change", "evening_peak",
+                  "overload_spike", "multi_step")
 
 DEFAULTS = RealisticParams()
 
