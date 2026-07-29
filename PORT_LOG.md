@@ -1343,3 +1343,69 @@ brackets both measured feeders instead of sitting above ETTh2's whole
 distribution. Most of the sampler's apparent over-assumption of load swing was a
 period error, not an amplitude error. The rescale itself is **not** applied:
 choosing it is the scope decision O-10 §7 leaves open, not a period fix.
+
+---
+
+## Swing fidelity — does the surrogate flatten the cycle?
+
+### J-75 The check MAE cannot do, and why it belongs in the C-11 protocol
+
+Networks are spectrally biased toward low frequencies, so a thermal surrogate may
+smooth peaks. If it does, it throws away part of the Jensen gap the method exists
+to preserve — and thermal MAE cannot see it, because a flattened trajectory can
+sit close in mean absolute error while under-stating the peak-to-trough range the
+convex Arrhenius integral is sensitive to. MAE and swing are different
+measurements and only one of them is what the convexity argument rests on.
+
+On the v57 checkpoint the answer is that COD does **not** flatten: median
+predicted/true swing 1.0121 over 50 live time-varying cases, under-predicting in
+14% of them, and the ratio trends *toward* 1 as the swing grows (1.0176 in the
+10-15 degC band, 1.0100 in 25-200) where spectral bias would worsen. The Jensen
+gap carried along the predicted trajectory is 0.4-3.0% *above* the true one, not
+below.
+
+### J-76 The null result is a mechanism, and testing it needs a model that trained
+
+COD predicts a correction to an analytic first-order solution, so the cycle shape
+comes from the IEC baseline and the network's spectral bias has nothing to
+flatten. That predicts the opposite for any architecture without such a baseline.
+`18_swing_fidelity.py` now runs all three available checkpoints:
+
+| model | baseline H | median swing ratio | under-predicting | thermal MAE |
+|---|---|---|---|---|
+| COD v57 | yes | 1.0121 | 14% | 0.51 degC |
+| Mono FAIR | no | 0.6802 | 100% | 12.69 degC |
+| Mono multi-head | no | 0.6493 | 100% | 8.81 degC |
+
+The direction is right and the one-sidedness is the hard part to explain away:
+independent error *inflates* a sampled max-minus-min, so an inaccurate but
+unbiased model should over-predict swing. Losing it in 100% of cases is a
+smoothing signature, not an error-size signature.
+
+**It still does not establish the mechanism, because those two checkpoints did
+not train.** MAE 12.7 and 8.8 degC against COD's 0.51, and 37.8 degC in the
+25-200 band where the ratio collapses to 0.61 — a model not tracking the
+trajectory at all says nothing about spectral bias. In the bands where they do
+roughly track (MAE 2.2-4.5 degC) the loss is a milder 17-28%, and there the ratio
+does not worsen with swing, it improves. Audit M-2 already found the monolithic
+error *rising* 47x as capacity grows 16x with causal weights underflowed to zero,
+i.e. "we could not train this baseline". Attributing the swing loss to spectral
+bias would repeat exactly that inference, and the repo rule stands: a model that
+did not converge is reported as not converged.
+
+Ablation A is the clean one-variable test — COD's architecture with H replaced by
+the constant x0, same network, same pipeline — and **its weights do not exist**.
+Neither `ablation_a_no_baseline.pt` nor
+`transformer_pideepOnet_abl_A_no_baseline.pt` is among the supplied artifacts,
+which `cod/models/cod.py` already records at `CODNoBaseline`. The monolithic pair
+changes two things at once (no baseline H *and* no cascaded gas integral) and
+carries the J-8 defect besides. So the delta-learning argument this would support
+is not yet writable; it needs one training run of `CODNoBaseline` on the fix-7
+distribution at COD's budget.
+
+### J-77 One mislabelled column, fixed
+
+The gap table's last column was headed "gap lost" while every value in it was a
+gain, and it computes `median(pred)/median(true) - 1`, the ratio of medians,
+which is why it read +1.53% beside a median ratio of 1.0269 for `c_H2`. Renamed
+and signed so that negative means gap lost.
