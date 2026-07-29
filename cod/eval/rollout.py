@@ -79,7 +79,8 @@ class RolloutResult:
 def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
                          n_eval: int = 20, T: float = TW,
                          dp_source: str = "model", steady_state=None,
-                         device=None) -> RolloutResult:
+                         device=None, max_windows: int | None = None
+                         ) -> RolloutResult:
     """Roll the model forward window by window until DP reaches end of life.
 
     Each window: K_w = K_base + 0.05 sin(2 pi day / 365),
@@ -90,6 +91,10 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
 
     `steady_state` defaults to `true_fixed_point_np` (Phase 2 fix 1). Pass
     `formula_B` to reproduce v57.
+
+    `max_windows` caps the horizon directly, for diagnostics that need many
+    scenarios rather than long ones. `None` leaves the `max_years` behaviour
+    untouched, so nothing that does not pass it can change.
     """
     if steady_state is None:
         steady_state = true_fixed_point_np
@@ -100,7 +105,8 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
 
     model.eval()
     windows_per_year = int(365 * 1440 / T)
-    max_windows = max_years * windows_per_year
+    if max_windows is None:
+        max_windows = max_years * windows_per_year
     t_q = torch.linspace(T * 0.01, T, n_eval, device=device).unsqueeze(-1)
     t_eval_np = t_q.squeeze(-1).cpu().numpy()
     tau_np = np.linspace(0, T, N_SENSORS)

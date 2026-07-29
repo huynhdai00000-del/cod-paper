@@ -1123,3 +1123,94 @@ attempted: it is larger than O-10 and would want its own entry. Noted as the rea
 `RealisticParams` is untouched, as the brief required. Setting `K_amp` from this
 would mean choosing which population the benchmark is about, and on a two-unit
 sample that is a scope decision for the paper, not a calibration.
+
+---
+
+## O-9 — diagnosing the -3 degC rollout bias
+
+### J-65 The bias is the metric's, not the model's
+
+`RolloutResult.theta_bias` is `theta_TO_end - theta_ss_ref`. `theta_TO_end` is
+top-oil at the end of the window; `theta_ss_ref` is `steady_state(K_w, Ta_w)`, the
+temperature the unit would settle at under the window's *mean* forcing held
+forever. Within each window the rollout applies a full sine period of ripple
+(`Ta_w ± 2` degC, `K_w ± 0.05`), and top-oil follows it through a first-order lag
+of `tau_oil = 150` min against `T = 720` min. At the instant the forcing returns to
+its mean the lagged response has not, so the difference is nonzero for a model with
+no error at all.
+
+Three demonstrations that agree:
+
+* Closed form. Gain `1/sqrt(1 + (omega tau)^2) = 0.607`, lag `atan(omega tau) =
+  52.6 deg`, end-of-window factor `-gain sin(lag) = -0.482`. Applied to the
+  steady-state amplitude of the two ripples this predicts a negative, one-signed
+  offset growing with load.
+* `ExactModel` — RK45 on `fast_rhs_np` at `rtol = 1e-10` wearing `CODOperator`'s
+  call signature, so `chi_lifetime_rollout` runs against ground truth itself.
+  Measured bias -2.863 degC at K_base = 0.85 rising monotonically to -3.876 at
+  1.10, negative in 100% of 540 windows. The audit's |bias|_mean of 3.09 sits
+  inside that range.
+* Swapping the reference for the cyclic endpoint of the window's own forcing —
+  which contains the lag already — leaves -0.002 degC. 99.94% of the effect is the
+  lag.
+
+### J-66 The K-monotonicity is what kills the manuscript's story for the second time
+
+The bias grows smoothly from -2.86 to -3.88 degC as K_base goes 0.85 -> 1.10, with
+no feature at K = 1. That is the signature of the lag mechanism, because
+`dtheta_ss/dK` grows with K and the load ripple's contribution grows with it. An
+ETC staircase at K = 1 would put a discontinuity *at* K = 1. The manuscript's
+explanation was already refuted for being false at K = 1 (the two formulas coincide
+exactly there and the Rf clamp is inactive); it is now also explaining an effect
+that has no physical existence.
+
+### J-67 The formula A / B lead: chased, and ruled out on shape rather than size
+
+The audit's remaining lead was a ~-3 degC offset between formula A and formula B at
+high load. It survives a size check — `A - B` does pass through -3 degC inside the
+rollout's operating box — so it had to be ruled out on something else. Two things:
+
+*Shape.* Evaluated along the actual `(K_w, Ta_w)` sequence the rollout visits over
+a year, `A - B` swings across roughly 12 degC with the seasonal ambient. The
+measured bias has sd 0.07 degC and is flat. A quantity that varies by degrees
+cannot cause one that varies by hundredths, however well their means agree.
+
+*Structure.* `formula_A` is not on the rollout path at all. `chi_lifetime_rollout`
+takes one `steady_state` argument and uses it for `theta_ss0`, the gas IC via
+`gas_ic_from_ss`, and `theta_ss_ref` alike — in v57 (`formula_B` throughout) and
+now (`true_fixed_point_np` throughout). There is no second formula for a difference
+to be taken against.
+
+Recorded because checking the trace, rather than the table the lead came from, is
+what turned a plausible cause into a ruled-out one.
+
+### J-68 The ageing consequence is smaller than O-9 feared, and the gap moves
+
+O-9's stated worry: at 10.8 %/K a systematic -3 degC understates the ageing rate by
+~30%, so no EOL number is publishable. The sensitivity arithmetic is right —
+`B_aging/T^2` is 10.77%/K at 100 degC, confirmed from the code's own constants —
+but **the -3 degC never entered the DP calculation.** Under `dp_source="model"`,
+the default, DP is advanced from `theta_for_dp = xp[:, 0]`, the predicted
+trajectory over 20 quadrature points. `theta_ss_ref` reaches the DP update only
+under `dp_source="reference"`, where the model is absent by design. The bias field
+is reported and consumed by nothing.
+
+This does not clear the rollout to publish EOL numbers, and the report says so.
+It removes one specific reason to distrust them and replaces it with an honest
+gap: the model's true rollout thermal error has never been measured, because the
+field meant to measure it was measuring something else.
+
+### J-69 `max_windows` added to `chi_lifetime_rollout`; the metric is NOT fixed here
+
+The diagnosis needs many short scenarios rather than a few long ones, so
+`chi_lifetime_rollout` gained `max_windows: int | None = None`. `None` preserves
+the `max_years` behaviour exactly, so nothing that does not pass it can change.
+
+`theta_bias` itself is left alone. O-9 asked for a diagnosis, and redefining the
+metric in the same commit that explains why the old one was wrong would put the
+before and the after in one diff. It should be scored against a reference
+integration of `fast_rhs_np` over the same window from the same IC; `theta_ss_ref`
+is worth keeping as its own field, since distance from equilibrium is a real
+diagnostic, just not one to subtract a prediction from. Separate change, and it
+needs a retrained model to be worth running — fix 6 invalidated the checkpoint
+again.
