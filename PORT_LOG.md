@@ -1280,3 +1280,66 @@ at all.
 `16_bias_diagnosis.py` now reads `theta_ss_offset` explicitly at both of its call
 sites. Left on `theta_bias` it would have regenerated `BIAS_DIAGNOSIS.md` with the
 near-zero numbers of the fixed metric and quietly contradicted its own argument.
+
+---
+
+## Fix 7 — the sampler's forcing period (N-6, N-7)
+
+Logged after fix 8 because that is the order the commits landed; the work
+predates it.
+
+### J-73 The load pattern is a day, the window is a slice of it
+
+`make_realistic_profile` completed a whole sine period inside the 720 min
+window, i.e. asserted a 12 h load period against a real one of 24 h. The sampler
+is now built around `make_realistic_day` (a full 24 h pattern on its own grid)
+plus `window_from_day` (the 12 h slice starting at a uniformly drawn time of
+day, wrapped with `np.interp(..., period=P)` so a window straddling midnight
+needs no special case). `RealisticParams.cycle_period = 1440.0` is a field like
+any other knob, so the 24 h assumption can be argued with.
+
+Every family became a day pattern, not only the periodic ones, and the
+event-shaped ones kept their **absolute** durations: the overload spike is still
+58-144 min and the evening peak still 130-216 min wide, with only the position
+now drawn over the day. That is deliberate — an overload lasts as long as it
+lasts regardless of what the surrounding cycle does — and it is also why the
+realised uplift is smaller than the sinusoid arithmetic predicts (J-74).
+
+The initial condition had to follow. `day_theta_cycle` and `day_steady_theta0`
+put theta_TO(0) at the periodic state of the whole 24 h cycle, read at the
+window's own offset, and the dissolved-gas equilibrium now averages the hot-spot
+over the day rather than the window. Gas equilibrates over weeks, so a window
+falling on the night trough should not be handed the gas loading of a
+permanently cool unit. `periodic_steady_theta0` is kept for callers holding only
+a window, documented as asserting exactly the error N-6 identifies, and is not
+used by `build_realistic_set`.
+
+### J-74 K_amp is not touched, and the uplift is 1.18 rather than 1.378
+
+A first-order system attenuates a sinusoid by `1/sqrt(1 + (omega tau_oil)^2)`:
+0.607 at a 12 h period, 0.837 at 24 h, ratio 1.378. Forcing at the wrong period
+forced the calibration to assume 1.378x more load swing than reality to reach a
+given hot-spot swing, and `K_amp = 12-28%` divided by 1.378 is 8.7-20.3% —
+which is the range ETT measures (J-63: ETTh2 median 8.7%, ETTh1 non-back-feeding
+17.8%). The amplitude was never the error, so `K_amp` is left alone.
+
+Measured on 200 draws at seed 999, by RK45 on `fast_rhs_np` so no model error
+enters: median realised hot-spot swing 13.18 degC against the old sampler's
+11.20, with `K_amp` unchanged. That is 1.177x, not 1.378x.
+
+The gap is expected rather than a discrepancy, and the first reason is the one
+that can be checked from the code instead of inferred from the result: **fix 7
+does not change the frequency content of the event-shaped families at all.**
+Their timescales in minutes are identical before and after (J-73), so the 1.378
+uplift never applied to them — only `daily` and `base_load` collect it in full,
+and a mixture median has to fall below the pure-sinusoid figure by construction.
+The other two reasons are that a 12 h window sees only half a 24 h cycle at a
+random phase, and that windows containing none of the day's event are now a real
+part of the population where they were previously absent by construction.
+
+Consequence worth putting in the paper: to restore the old 11.20 degC median,
+`K_amp` would have to be scaled by 0.850, i.e. 10.2-23.8% of rated — which
+brackets both measured feeders instead of sitting above ETTh2's whole
+distribution. Most of the sampler's apparent over-assumption of load swing was a
+period error, not an amplitude error. The rescale itself is **not** applied:
+choosing it is the scope decision O-10 §7 leaves open, not a period fix.

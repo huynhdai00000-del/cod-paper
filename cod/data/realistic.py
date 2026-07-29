@@ -87,6 +87,11 @@ class RealisticParams:
     incipient fault, which is what makes a DGA benchmark non-trivial.
     """
 
+    # The load pattern is a DAY. The 12 h window is a slice of it at a random
+    # time of day (DECISIONS N-6). Before this, every family completed a full
+    # cycle inside the 720 min window, i.e. a 12 h load period, and a real one is
+    # 24 h. See `make_realistic_day` for why that mattered more than it looks.
+    cycle_period: float = 1440.0
     # operating point. Loading is not drawn directly: a fleet is loaded so that
     # temperature stays in band, so the *hot-spot* is drawn and the load that
     # achieves it is solved for. IEC 60076-7 puts rated hot-spot at 98 degC, the
@@ -126,17 +131,37 @@ DEFAULTS = RealisticParams()
 # ═══════════════════════════════════════════════════════════════════════════
 # Load and ambient
 # ═══════════════════════════════════════════════════════════════════════════
-def make_realistic_profile(rng: np.random.RandomState,
-                           p: RealisticParams = DEFAULTS,
-                           T: float = TW,
-                           n_sensors: int = N_SENSORS) -> np.ndarray:
-    """One (K, theta_a) profile, returned flat as [K(n), Ta(n)].
+def make_realistic_day(rng: np.random.RandomState,
+                       p: RealisticParams = DEFAULTS,
+                       n_day: int | None = None) -> dict:
+    """One full 24 h (K, theta_a) pattern, plus the time of day the window starts.
 
-    Same operational shapes as the v57 families, with amplitudes calibrated to a
-    real daily cycle rather than to closing a test-set gap. Every profile carries a
-    diurnal ambient cycle with a random phase, because every site does.
+    PHASE 2 FIX 7 (DECISIONS N-6, N-7). The load pattern is now a **day** and the
+    evaluation window is a slice of it. Previously every family completed a whole
+    cycle inside the 720 min window, which is a 12 h load period against a real
+    one of 24 h, and that is not a cosmetic difference:
+
+    a first-order thermal system attenuates a sinusoid by
+    `1/sqrt(1 + (omega tau_oil)^2)`, which is 0.607 at a 12 h period and 0.837 at
+    24 h — a ratio of 1.378. Forcing at the wrong period therefore forced the
+    calibration to assume 1.378x more load swing than reality to reach a given
+    hot-spot swing. `K_amp = 12-28%` divided by 1.378 is 8.7-20.3%, which is the
+    range ETT actually measures (`ETT_LOAD_CALIBRATION.md`: ETTh2 median 8.7%,
+    ETTh1 non-back-feeding days 17.8%). The amplitude was never the error; the
+    period was. **`K_amp` is deliberately not touched.**
+
+    Every family is built over the day, not only the periodic ones. A shift change
+    or an overload spike happens at a *time of day*, so a 12 h window may contain
+    it or may not — which is the point. Windows that happen to contain little
+    variation are a real and previously absent part of the population.
+
+    Returns the day arrays on a uniform grid over `[0, cycle_period)`, treated as
+    periodic, together with `offset`, the time of day at which the window begins.
     """
-    tau = np.linspace(0.0, T, n_sensors)
+    P = p.cycle_period
+    if n_day is None:
+        n_day = 4 * N_SENSORS
+    t = np.linspace(0.0, P, n_day, endpoint=False)
     kind = rng.choice(p.families, p=list(p.weights))
 
     # Draw the intended operating temperature, then the load that achieves it at
@@ -150,33 +175,78 @@ def make_realistic_profile(rng: np.random.RandomState,
     phase = rng.uniform(0.0, 2.0 * np.pi)
 
     if kind == "base_load":
-        K = K_base + p.base_load_frac * amp * np.sin(2 * np.pi * tau / T + phase)
+        K = K_base + p.base_load_frac * amp * np.sin(2 * np.pi * t / P + phase)
     elif kind == "daily":
-        K = K_base + amp * np.sin(2 * np.pi * tau / T + phase)
+        K = K_base + amp * np.sin(2 * np.pi * t / P + phase)
     elif kind == "ramp":
-        K = np.linspace(K_base, K_base + rng.uniform(-1.5, 1.5) * amp, n_sensors)
+        # A ramp is a within-day trend, so it rises across the day and returns:
+        # a monotone ramp over 24 h that never comes back is not a daily pattern.
+        K = K_base + rng.uniform(-1.5, 1.5) * amp * np.sin(np.pi * t / P)
     elif kind == "shift_change":
-        t_step = rng.uniform(0.3, 0.7) * T
-        K = np.where(tau < t_step, K_base, K_base + rng.uniform(-1.5, 1.5) * amp)
+        # Two shifts a day, changing at a drawn time of day.
+        t_step = rng.uniform(0.0, 1.0) * P
+        dK = rng.uniform(-1.5, 1.5) * amp
+        half = np.mod(t - t_step, P) < 0.5 * P
+        K = np.where(half, K_base + dK, K_base)
     elif kind == "evening_peak":
-        # one broad peak inside the window, the usual residential shape
-        centre = rng.uniform(0.45, 0.7) * T
-        width = rng.uniform(0.18, 0.30) * T
-        K = K_base + 1.4 * amp * np.exp(-0.5 * ((tau - centre) / width) ** 2)
+        # One broad peak per day, the usual residential shape. Absolute widths are
+        # unchanged from the window-local version (130-216 min); only the position
+        # is now drawn over the day, so a window may miss the peak entirely.
+        centre = rng.uniform(0.0, 1.0) * P
+        width = rng.uniform(0.09, 0.15) * P
+        d = np.abs(t - centre)
+        d = np.minimum(d, P - d)                       # circular distance
+        K = K_base + 1.4 * amp * np.exp(-0.5 * (d / width) ** 2)
     elif kind == "overload_spike":
-        K = np.full(n_sensors, K_base)
-        t0 = rng.uniform(0.2, 0.6) * T
-        t1 = t0 + rng.uniform(0.08, 0.20) * T
-        K = np.where((tau >= t0) & (tau <= t1), rng.uniform(*p.overload_K), K)
+        # Absolute duration unchanged (58-144 min), position drawn over the day.
+        K = np.full(n_day, K_base)
+        t0 = rng.uniform(0.0, 1.0) * P
+        dur = rng.uniform(0.04, 0.10) * P
+        d = np.mod(t - t0, P)
+        K = np.where(d <= dur, rng.uniform(*p.overload_K), K)
     else:  # multi_step
-        K = np.full(n_sensors, K_base)
-        for ts in np.sort(rng.uniform(0, T, rng.randint(1, 4))):
-            K = np.where(tau >= ts, K_base + rng.uniform(-1.2, 1.2) * amp, K)
+        K = np.full(n_day, K_base)
+        for ts in np.sort(rng.uniform(0, P, rng.randint(2, 7))):
+            K = np.where(t >= ts, K_base + rng.uniform(-1.2, 1.2) * amp, K)
+        # close the loop so the pattern is genuinely periodic
+        K[t >= P - 1e-9] = K[0]
 
     K = np.clip(K, *p.K_bounds)
     Ta = (Ta_base + rng.uniform(*p.Ta_amp)
-          * np.sin(2 * np.pi * tau / T + rng.uniform(0, 2 * np.pi)))
+          * np.sin(2 * np.pi * t / P + rng.uniform(0, 2 * np.pi)))
+    offset = float(rng.uniform(0.0, P))
+    return {"kind": str(kind), "t": t, "K": K, "Ta": Ta, "offset": offset,
+            "period": P}
+
+
+def window_from_day(day: dict, T: float = TW,
+                    n_sensors: int = N_SENSORS,
+                    offset: float | None = None) -> np.ndarray:
+    """The `T`-long slice of a day pattern starting at `offset`, flat [K(n), Ta(n)].
+
+    `np.interp(..., period=P)` wraps, so a window that straddles midnight is
+    handled without a special case.
+    """
+    P = day["period"]
+    off = day["offset"] if offset is None else offset
+    t_win = off + np.linspace(0.0, T, n_sensors)
+    K = np.interp(t_win, day["t"], day["K"], period=P)
+    Ta = np.interp(t_win, day["t"], day["Ta"], period=P)
     return np.concatenate([K, Ta]).astype(np.float32)
+
+
+def make_realistic_profile(rng: np.random.RandomState,
+                           p: RealisticParams = DEFAULTS,
+                           T: float = TW,
+                           n_sensors: int = N_SENSORS) -> np.ndarray:
+    """One (K, theta_a) window, returned flat as [K(n), Ta(n)].
+
+    Convenience wrapper: draw a day, take the window. Callers that also need a
+    consistent initial condition want `make_realistic_day` plus `window_from_day`,
+    because `sample_realistic_ic` needs the whole day to find the periodic state
+    (see its `day` argument).
+    """
+    return window_from_day(make_realistic_day(rng, p), T, n_sensors)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -222,27 +292,68 @@ def solve_K_for_hot_spot(target_C: float, Ta: float,
 def periodic_steady_theta0(K_s: np.ndarray, Ta_s: np.ndarray,
                            n_cycles: int = DEFAULTS.burn_in_cycles,
                            T: float = TW) -> float:
-    """theta_TO(0) for a unit that has been running this pattern day after day.
+    """theta_TO(0) for a unit that has been running this pattern cycle after cycle.
 
-    Integrates the thermal ODE over `n_cycles` copies of the window and returns the
-    end value, which is the periodic steady state. With tau_oil = 150 min against a
-    720 min window, three cycles leaves a transient of exp(-3*720/150) = 6e-7 of
-    the initial mismatch.
+    Integrates the thermal ODE over `n_cycles` copies of `(K_s, Ta_s)` and returns
+    the end value, which is the periodic steady state. With tau_oil = 150 min
+    against a 720 min cycle, three cycles leaves a transient of
+    exp(-3*720/150) = 6e-7 of the initial mismatch.
 
     Reuses `DailyMeanArrhenius.theta_TO_trajectory` rather than restating the
     recurrence, so the closed-form solution has one definition in the package.
+
+    NOTE (fix 7): `(K_s, Ta_s)` must be a full **cycle**. Since N-6 the cycle is
+    the 24 h day, not the 12 h window, so callers pass the day arrays and read the
+    result at the window's offset — see `day_steady_theta0`. Repeating a 12 h
+    window would assert a 12 h load period, which is the error fix 7 removes.
     """
     theta = float(true_fixed_point_np(float(K_s[0]), float(Ta_s[0])))
+    dm = DailyMeanArrhenius(T=T, n_sensors=len(K_s))
     for _ in range(n_cycles):
-        _, traj = _dm.theta_TO_trajectory(theta, K_s, Ta_s)
+        _, traj = dm.theta_TO_trajectory(theta, K_s, Ta_s)
         theta = float(traj[-1])
     return theta
+
+
+def day_theta_cycle(day: dict, n_cycles: int = DEFAULTS.burn_in_cycles):
+    """The periodic 24 h top-oil trajectory of a unit running this day pattern.
+
+    Returns `(s, K_c, Ta_c, theta)` on the closed cycle grid — closed meaning the
+    endpoint repeats the start, which the recurrence needs and `np.interp`'s
+    `period` argument then wraps correctly.
+
+    Both the initial condition and the gas equilibrium are read off this one
+    trajectory, so they cannot disagree about what the unit is doing.
+    """
+    P = day["period"]
+    K_c = np.append(day["K"], day["K"][0])
+    Ta_c = np.append(day["Ta"], day["Ta"][0])
+    dm = DailyMeanArrhenius(T=P, n_sensors=len(K_c))
+    theta = float(true_fixed_point_np(float(K_c[0]), float(Ta_c[0])))
+    for _ in range(n_cycles):
+        s, traj = dm.theta_TO_trajectory(theta, K_c, Ta_c)
+        theta = float(traj[-1])
+    s, traj = dm.theta_TO_trajectory(theta, K_c, Ta_c)
+    return s, K_c, Ta_c, traj
+
+
+def day_steady_theta0(day: dict,
+                      n_cycles: int = DEFAULTS.burn_in_cycles) -> float:
+    """theta_TO at the window's start, for a unit already cycling on this day.
+
+    The periodic state of the whole 24 h pattern, read at `day["offset"]`. This is
+    what makes the initial condition consistent with the profile once the profile
+    is a day and the window is a slice of it.
+    """
+    s, _, _, traj = day_theta_cycle(day, n_cycles)
+    return float(np.interp(day["offset"], s, traj, period=day["period"]))
 
 
 def sample_realistic_ic(rng: np.random.RandomState, sensors: np.ndarray,
                         p: RealisticParams = DEFAULTS,
                         T: float = TW,
-                        n_sensors: int = N_SENSORS) -> np.ndarray:
+                        n_sensors: int = N_SENSORS,
+                        day: dict | None = None) -> np.ndarray:
     """One initial condition consistent with the profile that will drive the window.
 
     `sensors` is the flat [K(n), Ta(n)] array from `make_realistic_profile`. The
@@ -266,16 +377,33 @@ def sample_realistic_ic(rng: np.random.RandomState, sensors: np.ndarray,
     K_s = sensors[:n_sensors].astype(float)
     Ta_s = sensors[n_sensors:2 * n_sensors].astype(float)
 
-    theta0 = periodic_steady_theta0(K_s, Ta_s, p.burn_in_cycles, T)
+    if day is not None:
+        # Fix 7: the periodic state belongs to the 24 h cycle, sampled at the
+        # window's time of day.
+        theta0 = day_steady_theta0(day, p.burn_in_cycles)
+    else:
+        # Fallback for callers that only hold a window. It asserts a load period
+        # equal to the window, which is exactly what N-6 identifies as wrong, so
+        # it is kept only so old scripts still run and is not used by
+        # `build_realistic_set`.
+        theta0 = periodic_steady_theta0(K_s, Ta_s, p.burn_in_cycles, T)
     offset = float(np.clip(rng.normal(0.0, p.hist_sigma), -p.hist_clip, p.hist_clip))
     noise = float(rng.normal(0.0, p.sensor_sigma))
     theta_TO = float(np.clip(theta0 + offset + noise, *p.theta_TO_bounds))
 
-    # The unit's typical operating hot-spot over this window, which is what its
-    # dissolved-gas equilibrium reflects.
-    _, traj = _dm.theta_TO_trajectory(theta_TO, K_s, Ta_s)
-    hs = np.array([hot_spot_ETC_np(float(traj[i]), float(K_s[i]))
-                   for i in range(n_sensors)])
+    # The unit's typical operating hot-spot, which is what its dissolved-gas
+    # equilibrium reflects. Fix 7: averaged over the whole DAY when one is
+    # available, not over the 12 h window. Dissolved gas equilibrates on a
+    # timescale of weeks; a window that happens to fall on the night trough should
+    # not be given the gas loading of a permanently cool unit.
+    if day is not None:
+        _, K_c, _, traj_d = day_theta_cycle(day, p.burn_in_cycles)
+        hs = np.array([hot_spot_ETC_np(float(traj_d[i]), float(K_c[i]))
+                       for i in range(len(K_c))])
+    else:
+        _, traj = _dm.theta_TO_trajectory(theta_TO, K_s, Ta_s)
+        hs = np.array([hot_spot_ETC_np(float(traj[i]), float(K_s[i]))
+                       for i in range(n_sensors)])
     hs_mean = float(hs.mean())
 
     T_HS_K = hs_mean + 273.15
@@ -296,18 +424,26 @@ def sample_realistic_ic(rng: np.random.RandomState, sensors: np.ndarray,
 # Dataset helpers
 # ═══════════════════════════════════════════════════════════════════════════
 def build_realistic_set(n: int, seed: int, p: RealisticParams = DEFAULTS,
-                        T: float = TW, n_sensors: int = N_SENSORS):
-    """`n` (IC, profile) pairs. The profile is drawn first, then the IC from it.
+                        T: float = TW, n_sensors: int = N_SENSORS,
+                        return_days: bool = False):
+    """`n` (IC, profile) pairs. The day is drawn first, then the window, then the IC.
 
     Order matters and is the opposite of the old sampler's, which drew every IC
-    before any profile and so could not have made them consistent.
+    before any profile and so could not have made them consistent. Since fix 7 the
+    day is the primary object and the IC is the periodic state of that day read at
+    the window's time of day.
     """
     rng = np.random.RandomState(seed)
     sensors = np.empty((n, 2 * n_sensors), dtype=np.float32)
     x0s = np.empty((n, 1 + N_GAS), dtype=np.float32)
+    days = []
     for i in range(n):
-        sensors[i] = make_realistic_profile(rng, p, T, n_sensors)
-        x0s[i] = sample_realistic_ic(rng, sensors[i], p, T, n_sensors)
+        day = make_realistic_day(rng, p)
+        sensors[i] = window_from_day(day, T, n_sensors)
+        x0s[i] = sample_realistic_ic(rng, sensors[i], p, T, n_sensors, day=day)
+        days.append(day)
+    if return_days:
+        return x0s, sensors, days
     return x0s, sensors
 
 
@@ -321,6 +457,9 @@ def iec_exceedance(x0s: np.ndarray) -> dict:
     return out
 
 
-__all__ = ["RealisticParams", "DEFAULTS", "make_realistic_profile",
-           "periodic_steady_theta0", "sample_realistic_ic",
-           "build_realistic_set", "iec_exceedance"]
+__all__ = ["RealisticParams", "DEFAULTS", "make_realistic_day",
+           "window_from_day", "make_realistic_profile",
+           "periodic_steady_theta0", "day_theta_cycle", "day_steady_theta0",
+           "sample_realistic_ic",
+           "build_realistic_set", "iec_exceedance", "solve_K_for_hot_spot",
+           "steady_hot_spot"]
