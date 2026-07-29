@@ -1214,3 +1214,69 @@ is worth keeping as its own field, since distance from equilibrium is a real
 diagnostic, just not one to subtract a prediction from. Separate change, and it
 needs a retrained model to be worth running — fix 6 invalidated the checkpoint
 again.
+
+---
+
+## Fix 8 — `theta_bias` scored against the cyclic endpoint
+
+### J-70 The reference has to be the reference physics, not an approximation of it
+
+`theta_bias` is now `theta_TO_end - theta_cyc_ref`, where `theta_cyc_ref` is the
+window's own forcing repeated until the endpoint stops moving. The old quantity
+survives as `theta_ss_offset` — distance from the window-mean equilibrium is a
+real diagnostic, it just is not model error.
+
+The first attempt built the cyclic endpoint from
+`DailyMeanArrhenius.theta_TO_trajectory`, the closed-form first-order solution,
+because it is cheap and already in the package. **It was wrong by 0.11 degC at
+K = 0.85 and 0.30 degC at K = 1.10, growing with load.** The recurrence drives
+theta_TO toward `true_fixed_point_np(K, Ta)` as a *fixed* target, but the real
+ODE's `fac_n` depends on theta_TO itself through the copper correction
+`Rf = 1 + alpha_Cu (theta_HS - T_HS_ref)`. The two agree at equilibrium and drift
+apart through the transient, which is exactly where this reference lives.
+
+Putting a reference with its own 0.3 degC load-dependent error under a metric
+meant to resolve 0.5 degC of model error would have reproduced the defect O-9
+had just removed, one layer down and harder to see. `cyclic_endpoint_theta`
+therefore integrates `fast_rhs_np` itself. Only the thermal state is carried: the
+gas coupling is one-way, so `d(theta_TO)/dt` is a closed scalar ODE.
+
+Caught by asserting the agreement in `19_verify_bias_fix.py` rather than
+asserting it in a docstring. The docstring had in fact claimed "well under 0.01
+degC" before the check was run.
+
+### J-71 The fixed-point tolerance must be looser than the integrator's
+
+First working version took 10 s per window. The cause was `tol = 1e-9` on the
+cycle-to-cycle change, which is below RK45's own reproducibility at
+`rtol = 1e-8`, so the iteration never converged and ran to `max_cycles = 40`
+every single call. Each cycle contracts the mismatch by
+`exp(T / tau_oil) = 122x`, so six cycles is already far past what the metric can
+resolve; 40 bought a difference of 1e-5 degC for 7x the time.
+
+Now `tol = 1e-6`, `max_cycles = 20`, and two things make it cheap enough to leave
+on by default: `(K_w, Ta_w)` depends only on day-of-year, so the burn-in is cached
+and a 50-year rollout does 730 of them rather than 36,500; and each new window is
+seeded from the previous window's answer, which is ~0.01 degC away, so it
+converges in one cycle instead of six.
+
+### J-72 What the fixed metric reads on a zero-error model
+
+`19_verify_bias_fix.py`, `ExactModel` over 30 windows at four loads:
+
+| quantity | before fix 8 | after fix 8 |
+|---|---|---|
+| mean over windows 1+ | -3.34 degC | **-0.0009 degC** |
+| max abs over windows 1+ | 3.88 degC | **0.0078 degC** |
+| window 0 | -2.8 to -3.8 degC | +0.25 to +0.41 degC |
+
+Window 0 is deliberately not zero and is not a residual artifact. The rollout
+starts at `steady_state(K_base, 27.0)`, which is not the cyclic state, so in the
+first window the unit genuinely is off-cycle; the metric reports that and it
+decays to 0.008 degC by window 1 and -0.001 degC by window 2. A startup transient
+is a real property of the trajectory, unlike the old -3 degC which never decayed
+at all.
+
+`16_bias_diagnosis.py` now reads `theta_ss_offset` explicitly at both of its call
+sites. Left on `theta_bias` it would have regenerated `BIAS_DIAGNOSIS.md` with the
+near-zero numbers of the fixed metric and quietly contradicted its own argument.

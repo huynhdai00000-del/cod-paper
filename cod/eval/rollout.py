@@ -42,11 +42,71 @@ from cod.data.physics import (
     N_SENSORS,
     T_ref,
     TW,
+    fast_rhs_np,
     hot_spot_ETC_np,
     k0_aging,
 )
+from scipy.integrate import solve_ivp
+
 from cod.data.steady_state import gas_ic_from_ss, true_fixed_point_np
 from cod.training.losses import compute_chi
+
+
+def cyclic_endpoint_theta(K_s: np.ndarray, Ta_s: np.ndarray,
+                          theta_seed: float, T: float = TW,
+                          rtol: float = 1e-8, tol: float = 1e-6,
+                          max_cycles: int = 20) -> float:
+    """Top-oil at the end of a window, for a unit already cycling on that window.
+
+    Repeats the window's own forcing until the endpoint stops moving. This is the
+    reference that has the intra-window ripple's phase lag **already in it**, which
+    is what separates "lagged by the ripple" — not model error — from "the model
+    got the temperature wrong" (O-9, `audit_port/BIAS_DIAGNOSIS.md`).
+
+    Integrates `fast_rhs_np`'s thermal component with RK45, i.e. the same reference
+    physics every other metric is scored against. The closed-form recurrence in
+    `DailyMeanArrhenius` is *not* usable here and the reason is worth recording:
+    it drives theta_TO toward `true_fixed_point_np(K, Ta)` as a fixed target, but
+    the real ODE's `fac_n` depends on theta_TO itself through the copper-resistance
+    correction `Rf = 1 + alpha_Cu (theta_HS - T_HS_ref)`. The two agree at
+    equilibrium and drift apart during the transient — measured at 0.11 degC at
+    K = 0.85 and 0.30 degC at K = 1.10, growing with load. Against a metric whose
+    job is to resolve model error of order 0.5 degC, a reference carrying its own
+    0.3 degC load-dependent error is the same class of defect O-9 just removed.
+
+    Only the thermal state is integrated. The gas coupling is one-way, so
+    `d(theta_TO)/dt` is a closed scalar ODE and there is no reason to carry five
+    more states through the burn-in.
+
+    This reference is physical rather than formulaic: it is where the real unit
+    would be at the window end, which is not a function of which steady-state
+    approximation the experiment was scored with. Passing `formula_B` as the
+    rollout's `steady_state` to reproduce v57 does not change it.
+
+    `tol` is the fixed-point tolerance and is deliberately looser than `rtol`.
+    Setting it below the integrator's own reproducibility makes the iteration
+    never converge and run to `max_cycles` every call — measured at 40 cycles and
+    10 s per window instead of 6 cycles and 0.5 s, for a difference of 1e-5 degC.
+    Each cycle contracts the mismatch by `exp(T / tau_oil)` = 122x, so six is
+    already far past what a 0.5 degC metric can resolve.
+    """
+    tau = np.linspace(0.0, T, len(K_s))
+    x = np.zeros(6)
+
+    def d_theta(t, y):
+        x[0] = y[0]
+        return [fast_rhs_np(x, float(np.interp(t, tau, K_s)),
+                            float(np.interp(t, tau, Ta_s)))[0]]
+
+    theta = float(theta_seed)
+    for _ in range(max_cycles):
+        sol = solve_ivp(d_theta, [0.0, T], [theta], method="RK45",
+                        t_eval=[T], rtol=rtol, atol=rtol * 1e-2)
+        nxt = float(sol.y[0, -1])
+        if abs(nxt - theta) < tol:
+            return nxt
+        theta = nxt
+    return theta
 
 
 @dataclass
@@ -58,7 +118,8 @@ class RolloutResult:
     chi: np.ndarray
     dp: np.ndarray
     theta_TO_end: np.ndarray      # model prediction at the end of each window
-    theta_ss_ref: np.ndarray      # the steady state the bias is measured against
+    theta_ss_ref: np.ndarray      # steady state of the window-MEAN forcing
+    theta_cyc_ref: np.ndarray     # cyclic endpoint of the window's OWN forcing
     reached_eol: bool
 
     @property
@@ -72,6 +133,36 @@ class RolloutResult:
 
     @property
     def theta_bias(self) -> np.ndarray:
+        """Model error at the window end, against the cyclic endpoint.
+
+        FIXED (O-9, `audit_port/BIAS_DIAGNOSIS.md`). This used to return
+        `theta_TO_end - theta_ss_ref`, which subtracts the steady state of the
+        window's *mean* forcing from a value that is a *lagged* response to that
+        forcing's ripple. With `tau_oil = 150` min against a 720 min window
+        carrying a full sine period, the response lags 52.6 deg, so at the window
+        end it is still below the mean it is returning to. A model with **zero
+        error** scored -2.86 to -3.88 degC on that definition, which is where the
+        manuscript's unexplained "-3 degC bias" came from.
+
+        `theta_cyc_ref` is the endpoint a unit already cycling on this window's
+        forcing would be at, so it carries the same lag and the difference is
+        model error. An exact RK45 integration scores -0.002 degC against it.
+
+        The old quantity is still available as `theta_ss_offset`; it is a real
+        diagnostic of how far the operating point sits from equilibrium, just not
+        a model error.
+        """
+        return self.theta_TO_end - self.theta_cyc_ref
+
+    @property
+    def theta_ss_offset(self) -> np.ndarray:
+        """Distance from the equilibrium of the window-mean forcing.
+
+        What `theta_bias` returned before O-9. Nonzero for a perfect model; see
+        `theta_bias`. Kept because "how far from equilibrium is this operating
+        point" is worth knowing, under a name that does not invite reading it as
+        error.
+        """
         return self.theta_TO_end - self.theta_ss_ref
 
 
@@ -119,7 +210,8 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
                          dtype=torch.float32, device=device).unsqueeze(0)
     DP_cur = DP0
 
-    chi_l, dp_l, yr_l, th_l, ss_l = [], [], [], [], []
+    chi_l, dp_l, yr_l, th_l, ss_l, cy_l = [], [], [], [], [], []
+    cyc_cache: dict[tuple[float, float], float] = {}
     reached_eol = False
 
     for w in range(max_windows):
@@ -155,6 +247,21 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
         yr_l.append(w * T / 1440 / 365)
         th_l.append(float(xp[-1, 0].item()))
         ss_l.append(float(steady_state(K_w, Ta_w)))
+        # Seeded from the window-mean equilibrium rather than from the model, so
+        # the reference stays independent of what is being scored against it.
+        # (K_w, Ta_w) is a function of day-of-year alone, so the burn-in repeats
+        # every 730 windows; a 50-year rollout would otherwise redo each one 50
+        # times. Keyed on the values rather than the index so it stays correct if
+        # the seasonal forcing is ever changed.
+        ck = (round(K_w, 9), round(Ta_w, 9))
+        if ck not in cyc_cache:
+            # Seeded from the previous window's answer where there is one: the
+            # seasonal forcing moves by ~0.01 degC per window, so the iteration
+            # starts inside tolerance and costs one cycle instead of six.
+            seed = cy_l[-1] if cy_l else ss_l[-1]
+            cyc_cache[ck] = cyclic_endpoint_theta(
+                K_s.astype(float), Ta_s.astype(float), seed, T=T)
+        cy_l.append(cyc_cache[ck])
 
         x_cur = xp[-1:].clone()
 
@@ -165,7 +272,8 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
     return RolloutResult(
         K_base=K_base, years=np.array(yr_l), chi=np.array(chi_l),
         dp=np.array(dp_l), theta_TO_end=np.array(th_l),
-        theta_ss_ref=np.array(ss_l), reached_eol=reached_eol,
+        theta_ss_ref=np.array(ss_l), theta_cyc_ref=np.array(cy_l),
+        reached_eol=reached_eol,
     )
 
 
@@ -186,4 +294,4 @@ def bias_table(results: dict[float, RolloutResult]) -> str:
 
 
 __all__ = ["RolloutResult", "chi_lifetime_rollout", "chi_lifetime_sweep",
-           "bias_table"]
+           "bias_table", "cyclic_endpoint_theta"]

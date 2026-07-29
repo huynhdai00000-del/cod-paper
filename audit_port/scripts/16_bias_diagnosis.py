@@ -279,7 +279,12 @@ def s4_exact(A, tot, pred):
         r = chi_lifetime_rollout(m, K, dp_source="model",
                                  steady_state=true_fixed_point_np,
                                  max_windows=N_WIN)
-        b = r.theta_bias
+        # `theta_ss_offset` is what `theta_bias` returned when this diagnosis was
+        # written. The fix that followed it renamed the artifact and gave
+        # `theta_bias` the corrected definition, so this script has to name the
+        # old quantity explicitly or it would regenerate the report with the
+        # near-zero numbers of the fixed metric and quietly contradict itself.
+        b = r.theta_ss_offset
         biases[K], results[K] = b, r
         A(f"| {K:.2f} | {pred[K]:+.3f} | **{b.mean():+.3f}** | "
           f"{np.median(b):+.3f} | {b.std():.3f} | {b.min():+.3f} | "
@@ -347,7 +352,7 @@ def s5_reference(A, results):
             x_seed = np.concatenate([[th[i]], np.array([50., 15., 80., 300., 800.])])
             d_cyc.append(th[i] - cyclic_endpoint(K_w, Ta_w, x_seed))
         d_cyc = np.array(d_cyc)
-        b_ss = r.theta_bias[sel].mean()
+        b_ss = r.theta_ss_offset[sel].mean()
         both.append((K, b_ss, d_cyc.mean()))
         A(f"| {K:.2f} | {b_ss:+.3f} degC | {d_cyc.mean():+.3f} degC | 0.000 degC |")
         print(f"  K={K:.2f} vs ss {b_ss:+.3f}  vs cyclic {d_cyc.mean():+.3f}")
