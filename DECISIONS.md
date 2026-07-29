@@ -133,6 +133,28 @@ phải báo cáo. Trích Lu et al. 2022 (CMAME 393:114778, 16 benchmark, FAIR) l
 khung. Model không hội tụ báo cáo là không hội tụ kèm learning curve, không
 quy thành con số hiệu năng.
 
+**Giao thức trung thực chu kỳ (thêm 2026-07-29).** Mọi model trong ma trận, kể
+cả tầng 0 và tầng 3, phải báo cáo **ba** thứ chứ không chỉ MAE nhiệt:
+
+1. bảng biên độ dao động phân tầng theo biên độ thật (tỷ số dự đoán/thật, theo
+   dải 1-5, 5-10, 10-15, 15-25, 25-200 °C);
+2. bảng khoảng cách Jensen dọc quỹ đạo, dự đoán so với thật, cho cả sáu state;
+3. MAE nhiệt, giữ nguyên, nhưng đọc **cùng** hai bảng trên.
+
+Lý do: MAE và biên độ đỉnh-đáy là hai phép đo khác nhau, và chỉ một trong hai là
+thứ lập luận về tính lồi phụ thuộc vào. Một quỹ đạo bị làm trơn có thể gần về
+MAE mà vẫn đánh mất phần khoảng cách Jensen — tức đúng thứ phương pháp này tồn
+tại để giữ. `audit_port/scripts/18_swing_fidelity.py` là script chuẩn, chạy
+được cho mọi model có chữ ký `model(x0, u, t)`.
+
+Đây cũng là chỗ kiểm giả thuyết cơ chế: COD dự đoán **hiệu chỉnh** so với nghiệm
+giải tích bậc một, nên hình dạng chu kỳ do baseline IEC cấp chứ không do mạng
+sinh ra, và spectral bias không có gì để làm phẳng. Kiến trúc không có baseline
+phải tự sinh chu kỳ, tức đúng phần tần số mà spectral bias triệt tiêu. Nếu đúng,
+delta-learning trên baseline giải tích không chỉ giảm gánh nặng xấp xỉ (điều ai
+cũng nói) mà còn **giữ khoảng cách Jensen trước spectral bias của mạng** — lập
+luận chưa ai đưa ra. Xem N-8 về tình trạng bằng chứng hiện tại.
+
 **Loại:** AMORE (C-7), Goswami (trùng vai trò với FNO và DeepONet), đại diện
 họ UDE (phương pháp của bài là một instance của UDE, benchmark với UDE là
 benchmark với chính mình; trích dẫn làm framework), Zanardi (không có code,
@@ -144,6 +166,23 @@ Lý do: không thiết kế CHI cho pin nên phần pin không tham gia được
 Giữ lập luận tổng quát trong Discussion bằng công thức độ nhạy `E/(Rg·T²)`, không chạy thí nghiệm. Ghi nhận rằng pin cho khoảng cách 1,79 ở ±15K quanh 35°C, gần bằng máy biến áp 1,70, vì Ea nhỏ hơn nhưng nhiệt độ vận hành thấp hơn.
 
 Section 8 cũ biến mất. Table 7 rút xuống một đoạn Discussion.
+
+### C-13. Khoảng cách Jensen trình bày theo đường cong kèm phân phối thật
+Không công bố một con số. Vẽ đường cong khoảng cách theo biên độ (giải tích,
+C-10) chồng lên phân phối biên độ đo từ ETT. Đây là Hình 1 của bài, dựng hoàn
+toàn từ dữ liệu công khai và vật lý giải tích, không cần model.
+
+Biên độ trung vị đo được: ETTh2 (tải quy ước) 8,7% rated, 85% số ngày dưới dải
+12-28% của sampler; ETTh1 không back-feed 17,8%; ETTh1 có back-feed 29,7%.
+ETTh1 back-feed giữa trưa đỉnh tháng 3-6, tức đấu nối điện mặt trời, và đó là
+loại máy bài nhắm tới.
+
+Phát biểu phạm vi: khoảng cách đáng kể với máy đấu nối tái tạo và máy tải biến
+động; máy chạy nền phẳng gần như không có khoảng cách nào để khai thác (N-4).
+
+---
+
+## OPEN — đang chờ
 
 **O-1. Cơ chế khuếch đại.** Đóng 2026-07-27. Gas output của monolithic là
 output trực tiếp của mạng, xác nhận ba cách: trace tĩnh, gradient test (0/28
@@ -157,21 +196,25 @@ thì bản lai phải tệ hơn.
 nhưng sai đại lượng khi trích như sai số nồng độ. Section 7.1 và Table 4 phải
 viết lại hoàn toàn.
 
-**O-8. Khoảng cách Jensen thực nghiệm.** Đóng 2026-07-27. `daily_mean.py` tái
-hiện bảng C-10 sai lệch tối đa 0,0048 từ chính hằng số trong code (DP 1,701 so
-với 1,70; C2H2 2,594 so với 2,59). Đo trên quỹ đạo thật, khoảng cách bám theo
-dự đoán giải tích ở mọi dải biên độ, đơn điệu theo biên độ, xếp thứ tự theo
-năng lượng hoạt hóa.
-
----
-
-## OPEN — đang chờ
-
 ### O-2. Phân bố sai số tuyệt đối
 Bảng hiện dùng mean MAE với median denominator. Cần median, mean, p90, max, kèm case index của max. Ưu tiên thấp, gộp vào lúc thiết kế metric cho benchmark mới.
 
-### O-3. Nguồn của k_gen, k_dis, E_act
+### O-3. Nguồn của k_gen, k_dis, E_act — ĐÓNG 2026-07-29 dưới dạng GIỚI HẠN
 IEC 60599 là hướng dẫn diễn giải chẩn đoán, không quy định hằng số động học. Ba phương án: tìm nguồn thật trong literature, khai báo là giá trị giả định của benchmark tổng hợp kèm sensitivity analysis, hoặc hiệu chỉnh từ bộ Katser. Bỏ A_SEI và E_SEI theo C-12.
+
+**Đóng bằng phương án 2: khai báo là giả định, không hiệu chỉnh.** Lý do là kết
+quả trung tâm không phụ thuộc vào chúng. Khoảng cách Jensen là **tỷ số** giữa
+tích phân Arrhenius trên quỹ đạo và giá trị của nó tại nhiệt độ trung bình, nên
+`k_gen` và `k_dis` xuất hiện ở cả tử số lẫn mẫu số và triệt tiêu. Chỉ còn `Ea`.
+
+Mà `Ea` thì có nguồn: giá trị DP 124,7 kJ/mol đúng bằng `B = 15000 K` của IEEE
+C57.91, và các giá trị khí nằm trong dải đã công bố cho phân hủy dầu và
+cellulose. Tham số không chắc chỉ ảnh hưởng **mức nồng độ tuyệt đối**, và phân
+tích độ nhạy ở Hình 11 đã phủ phần đó.
+
+Viết vào bài như một giới hạn đã khoanh vùng: hằng số động học là giả định của
+benchmark tổng hợp, kết quả Jensen bất biến với chúng, mức tuyệt đối thì không
+và được báo cáo kèm độ nhạy. Không mở lại để đi hiệu chỉnh.
 
 ### O-5. Retrain COD trên physics đã sửa
 Cấu hình `example_cod_seed1.yaml`, 12 giờ, 1 seed, khoảng 45 phút. Mục đích: xác nhận fix 1 không phá gì. Không phải số cho bài.
@@ -182,8 +225,61 @@ Reference bằng LSODA chạy liên tục toàn chân trời, không chia cửa 
 ### O-8. Đo khoảng cách Jensen thực nghiệm
 Triển khai `cod/models/daily_mean.py` và đo tỷ số giữa tích phân trên quỹ đạo phân giải và đánh giá tại nhiệt độ trung bình, trên test set thật, đối chiếu với bảng giải tích ở C-10. Báo cáo kèm biên độ dao động hot-spot thực tế của từng case, vì khoảng cách phụ thuộc biên độ. Đóng khi có `audit_port/JENSEN_GAP.md`.
 
-### O-9. Bias −3 °C chưa có lời giải thích
-Audit xác nhận bias tồn tại (`|bias|_mean = 3,09 °C`) nhưng bác lời giải thích trong bài (cấu trúc bậc thang ETC tại K = 1: hai công thức trùng nhau chính xác tại K = 1). Ở cửa sổ đơn thì 3 °C nhỏ, nhưng qua rollout với độ nhạy 10,8 %/K thì bias hệ thống này làm sai tốc độ lão hóa khoảng 30 phần trăm. Cần chẩn đoán thật trước khi công bố bất kỳ con số end-of-life nào.
+**O-8. Khoảng cách Jensen thực nghiệm.** Đóng 2026-07-27. `daily_mean.py` tái
+hiện bảng C-10 sai lệch tối đa 0,0048 từ chính hằng số trong code (DP 1,701 so
+với 1,70; C2H2 2,594 so với 2,59). Đo trên quỹ đạo thật, khoảng cách bám theo
+dự đoán giải tích ở mọi dải biên độ, đơn điệu theo biên độ, xếp thứ tự theo
+năng lượng hoạt hóa.
+
+### O-9. Bias −3 °C — ĐÃ CHẨN ĐOÁN 2026-07-28, chưa đóng
+`audit_port/BIAS_DIAGNOSIS.md`. **Bias là artifact của chính thước đo, không
+phải của model cũng không phải của vật lý.**
+
+`RolloutResult.theta_bias = theta_TO_end − theta_ss_ref`. Vế đầu là nhiệt độ dầu
+cuối cửa sổ; vế sau là `steady_state(K_w, Ta_w)`, tức nhiệt độ ổn định nếu giữ
+mãi tải và môi trường **trung bình** của cửa sổ. Trong mỗi cửa sổ rollout áp một
+chu kỳ sin đầy đủ (`Ta_w ± 2 °C`, `K_w ± 0,05`), và dầu bám theo qua trễ bậc một
+với `tau_oil = 150` phút trên cửa sổ `T = 720` phút. Đúng lúc kích thích quay về
+giá trị trung bình thì đáp ứng trễ **chưa** quay về. Hiệu số khác 0 ngay cả với
+model sai số bằng 0.
+
+Ba cách chứng minh khớp nhau:
+
+1. Giải tích: gain `1/sqrt(1+(ωτ)²) = 0,607`, trễ `atan(ωτ) = 52,6°`, hệ số cuối
+   cửa sổ `−gain·sin(trễ) = −0,482`. Dự đoán một offset âm, một dấu, tăng theo tải.
+2. `ExactModel` (RK45 trên `fast_rhs_np`, `rtol = 1e-10`, mang đúng chữ ký gọi
+   của `CODOperator`) chạy qua `chi_lifetime_rollout`: bias **−2,863 °C** tại
+   K_base = 0,85 tăng đơn điệu tới **−3,876** tại 1,10, âm ở 100% của 540 cửa sổ.
+   Con số 3,09 của audit nằm trong dải này.
+3. Đổi tham chiếu sang điểm cuối chu kỳ của chính kích thích cửa sổ đó (đã chứa
+   sẵn độ trễ): còn **−0,002 °C**. Tức 99,94% hiệu ứng là độ trễ pha.
+
+**Tính đơn điệu theo K bác lời giải thích của bài lần thứ hai.** Bias tăng trơn
+từ −2,86 lên −3,88 khi K_base đi từ 0,85 lên 1,10, không có đặc trưng gì tại
+K = 1. Bậc thang ETC tại K = 1 phải cho gián đoạn **tại** K = 1.
+
+**Manh mối formula A/B: đúng cỡ, sai hình dạng, và không nằm trên đường đi.**
+`A − B` có đi qua −3 °C trong hộp vận hành. Nhưng đo dọc theo chuỗi `(K_w, Ta_w)`
+thật của rollout suốt một năm, nó dao động khoảng 12 °C theo mùa, trong khi bias
+đo được có sd 0,07 °C và phẳng. Ngoài ra `formula_A` không xuất hiện trên đường
+đi của rollout: `chi_lifetime_rollout` chỉ nhận một tham số `steady_state` và
+dùng nó cho cả `theta_ss0`, IC khí, lẫn `theta_ss_ref`.
+
+**Hệ quả lão hóa nhỏ hơn lo ngại.** Số học 10,8 %/K đúng (`B_aging/T² = 10,77`
+%/K tại 100 °C, kiểm từ chính hằng số trong code), nhưng **−3 °C chưa bao giờ đi
+vào phép tính DP**: với `dp_source="model"` (mặc định), DP tiến theo
+`theta_for_dp = xp[:, 0]`, tức quỹ đạo dự đoán trên 20 điểm cầu phương.
+`theta_ss_ref` chỉ vào phép tính DP khi `dp_source="reference"`, nơi model vắng
+mặt theo thiết kế. Trường bias được báo cáo và không ai tiêu thụ.
+
+**Chưa đóng.** Điều này gỡ một lý do cụ thể để nghi ngờ, và thay bằng một lỗ
+hổng thành thật: **sai số nhiệt thật của model qua rollout chưa từng được đo**,
+vì trường lẽ ra đo nó lại đang đo thứ khác. Chưa đo được ngay: fix 6 vô hiệu
+checkpoint lần nữa nên chưa có model đã train để roll. Đóng khi có model retrain
+và `theta_bias` được chấm lại với tham chiếu là một phép tích phân
+`fast_rhs_np` trên cùng cửa sổ từ cùng IC. Chưa sửa `rollout.py` ở đây: O-9 yêu
+cầu chẩn đoán, và sửa thước đo trong cùng commit giải thích tại sao nó sai sẽ
+gộp before và after vào một diff.
 
 **O-10. Hiệu chuẩn phân phối tải theo ETT.** Đo xong 2026-07-28,
 `audit_port/ETT_LOAD_CALIBRATION.md`. **Chưa đóng**: kết quả là một quyết định
@@ -225,13 +321,38 @@ Hai điều kèm theo, ghi lại vì quan trọng hơn chính O-10:
 
 Chưa sửa gì trong `RealisticParams`, theo đúng yêu cầu báo cáo trước.
 
-**O-11 (mới). Tham số nhiệt chưa từng khớp với dữ liệu nào.** `tau_oil = 150`,
-`DTheta_oil_R = 55`, `n_exp = 0,8` là mặc định IEC, giả định chứ không hiệu
-chuẩn — cùng loại vấn đề với O-3 nhưng ở tầng nhiệt, tức tầng mà toàn bộ
-cascade phụ thuộc. ETT cung cấp OT đo được cùng với tải đo được trên hai máy
-thật, đủ để kiểm trực tiếp. Sinh ra từ O-10 §5: biên độ nhiệt dầu đo được thấp
-hơn nhiều so với mức mà tham số giả định ngụ ý, và chênh lệch đó hiện chưa có
-lời giải thích.
+### O-11. Hiệu chỉnh tham số nhiệt theo ETT — ĐÓNG 2026-07-29 dưới dạng GIỚI HẠN
+tau_oil, DTheta_oil_R, n_exp là mặc định IEC, giả định chứ không hiệu chỉnh,
+cùng vấn đề với O-3. ETT có nhiệt độ dầu đo được cùng tải đo được trên hai máy
+thật. Kiểm tra trực tiếp được. Chưa làm; lớn hơn phạm vi O-10.
+
+Liên quan: biên độ nhiệt độ dầu đo được là 2,39 °C (ETTh1) và 5,60 °C (ETTh2),
+so với sampler nhắm 10-15 °C ở hot-spot. Ba lý do chưa kết luận được: hot-spot
+dao động mạnh hơn top-oil (khoảng 2 lần, không đủ 4 lần cần thiết); hai máy này
+chạy rất nguội (OT trung vị 11,4 và 26,6 °C so với hot_spot_mean = 86) nên độ
+tăng nhiệt nhỏ theo K^1,6; và OT là số đo cảm biến, không phải theta_TO theo
+định nghĩa của model. Phép đo tải chuyển được sang máy nóng hơn, phép đo nhiệt
+độ thì không.
+
+**Đóng như giới hạn, không hiệu chỉnh.** Cùng lý do hình thức với O-3: ba tham
+số này định ra **mức** và **hằng số thời gian** của đáp ứng nhiệt, và bài không
+tuyên bố gì về mức tuyệt đối của một máy thật. Hiệu chỉnh chúng theo ETT lại
+vướng đúng ba lý do ở trên — hai máy chạy quá nguội, hot-spot không suy ra được
+từ OT, và OT là số đo cảm biến chứ không phải theta_TO của model — nên phép hiệu
+chỉnh sẽ đưa vào nhiều giả định hơn là nó gỡ bỏ.
+
+Viết vào bài: tham số nhiệt lấy mặc định IEC 60076-7, benchmark là tổng hợp chứ
+không phải bản sao của một máy cụ thể, và biên độ nhiệt độ dầu đo được trên ETT
+thấp hơn mức tham số này ngụ ý — nêu thẳng con số 2,39 và 5,60 °C. Không mở lại
+để đi hiệu chỉnh; nếu về sau có bộ dữ liệu máy chạy nóng kèm hot-spot đo được
+thì đó là bài khác.
+
+**O-12. Train CODNoBaseline (Ablation A) trên phân phối fix-7.** Phép thử một
+biến cho luận điểm N-8: COD thay baseline H bằng hằng số x0, giữ nguyên mạng và
+pipeline. Nếu nó làm trơn biên độ còn COD thì không, delta-learning trên nền
+giải tích có lý do chưa ai nêu là bảo toàn khoảng cách Jensen khỏi spectral
+bias. Checkpoint monolithic không dùng thay được: chúng đổi hai thứ cùng lúc
+(bỏ baseline và bỏ cascade), mang lỗi J-8, và chưa train.
 
 ---
 
@@ -353,3 +474,96 @@ Jensen.
 hot-spot 110 °C so với ngưỡng 100 ppm, trong khi hiện trường máy khỏe nằm ở
 5-50 ppm. Không phải lỗi sampler mà là lỗi tham số. O-3 chuyển từ vấn đề trích
 dẫn thành vấn đề hiệu chuẩn.
+
+**N-6. Chu kỳ tải trong sampler sai tần số.** make_realistic_profile hoàn thành
+trọn một chu kỳ sin trong cửa sổ 12 giờ, tức chu kỳ tải 12 giờ, trong khi tải
+thật có chu kỳ 24 giờ. Một cửa sổ 12 giờ thật chỉ thấy nửa chu kỳ, biên độ quan
+sát được bằng 0,66-0,79 lần biên độ ngày. Cộng với việc ETT cho thấy sampler đã
+giả định biên độ gấp đôi thực tế, hai sai lệch cùng chiều.
+
+Sửa bằng cách để chu kỳ nền là 24 giờ và cửa sổ 12 giờ cắt một đoạn với pha
+ngẫu nhiên. Không đụng K_amp.
+
+**ĐÃ SỬA 2026-07-29 (fix 7, commit 727d77c).** `make_realistic_day` +
+`window_from_day`, `cycle_period = 1440`, IC lấy từ trạng thái tuần hoàn của
+ngày đọc tại offset của cửa sổ. Biên độ hot-spot thực tế đo bằng RK45: trung vị
+**13,18 °C** so với 11,20 của sampler cũ, `K_amp` giữ nguyên. Chi tiết ở
+`audit_port/PERIOD_FIX.md`, nhật ký ở PORT_LOG J-73/J-74.
+
+Ghi chú cho C-4: lý do chọn 12 giờ là 4,8 lần tau_oil, tức về **thời gian đáp
+ứng nhiệt**, không phải về **chu kỳ cưỡng bức**. Hai thứ khác nhau, đến giờ mới
+tách bạch. C-4 vẫn đứng.
+
+**N-7. N-6 và O-9 là cùng một vật lý.** Suy giảm biên độ của hệ bậc một là
+1/sqrt(1+(ω·τ)²): 0,607 ở chu kỳ 12 giờ, 0,837 ở 24 giờ, tỷ số 1,378. Sampler
+phải giả định biên độ tải lớn hơn thực tế 1,38 lần để bù cho việc cưỡng bức
+sai tần số. Chia K_amp = 12-28% cho 1,378 ra 8,7-20,3%, đúng dải ETT đo được
+(ETTh2 8,7%; ETTh1 không back-feed 17,8%). Sửa N-6 là hòa giải sampler với dữ
+liệu thật mà không cần chỉnh tay.
+
+**Đo được sau fix 7: uplift 1,177 chứ không phải 1,378, và đó là điều phải xảy
+ra.** 1,378 là gain của **sin thuần**, còn sampler là hỗn hợp. Lý do chính kiểm
+được thẳng từ định nghĩa family: fix 7 **không** đổi nội dung tần số của các
+family dạng sự kiện — spike vẫn 58-144 phút, evening peak vẫn rộng 130-216 phút,
+chỉ vị trí là rải theo ngày — nên uplift 1,378 chưa bao giờ áp cho chúng; chỉ
+`daily` và `base_load` hưởng trọn. Trung vị của hỗn hợp buộc phải thấp hơn.
+Hai lý do phụ: cửa sổ 12 h chỉ thấy nửa chu kỳ ở pha ngẫu nhiên, và những cửa sổ
+không chứa sự kiện nào giờ là một phần thật của quần thể.
+
+**N-8. Surrogate KHÔNG làm trơn biên độ.** Tỷ số biên độ dự đoán trên thật là
+1,0038 (trung vị, n=100), hơi vượt chứ không thiếu. Phân tầng bác bỏ spectral
+bias: tỷ số 1,0176 ở dải 10-15 °C, 1,0100 ở dải 25-200 °C, tức tiến về 1 khi
+biên độ lớn nhất, ngược chiều với spectral bias. Khoảng cách Jensen dọc quỹ đạo
+dự đoán **tăng** 0,4 đến 3,0% so với quỹ đạo thật, không mất.
+
+Nguyên nhân là kiến trúc: COD dự đoán hiệu chỉnh trên nền nghiệm giải tích, nên
+hình dạng chu kỳ do baseline mang chứ không do mạng mang.
+
+Dự đoán kiểm chứng được: kiến trúc không có baseline giải tích phải làm trơn.
+Phép thử sạch nhất là Ablation A (COD bỏ baseline H). Nếu đúng, delta-learning
+trên nền giải tích có một lý do chưa ai nêu: bảo toàn khoảng cách Jensen khỏi
+spectral bias, không phải chỉ giảm gánh nặng xấp xỉ.
+
+Caveat: đo trên checkpoint v57 mà fix 6 đã vô hiệu, chỉ trong phân phối, trên
+sampler cũ. Phải chạy lại sau retrain. Phương pháp thì đã lập.
+
+**N-9. Kiểm dự đoán của N-8: đúng chiều, nhưng CHƯA lập được cơ chế.** Chạy
+`18_swing_fidelity.py` trên hai checkpoint không có baseline giải tích:
+
+| model | baseline H | tỷ số biên độ (trung vị) | thiếu biên độ | MAE nhiệt |
+|---|---|---|---|---|
+| COD v57 | có | **1,0121** | 14% số case | 0,51 °C |
+| Mono FAIR | không | **0,6802** | **100%** | 12,69 °C |
+| Mono multi-head | không | **0,6493** | **100%** | 8,81 °C |
+
+Mất 30-80% khoảng cách Jensen dọc quỹ đạo (c_C2H2 mất 80% ở Mono FAIR). Tính
+**một dấu** là phần khó giải thích bằng cách khác: sai số độc lập không thiên
+lệch phải làm *tăng* biên độ đỉnh-đáy chứ không giảm, nên thiếu biên độ ở 100%
+số case là dấu hiệu của làm trơn, không phải của sai số lớn.
+
+**Nhưng hai checkpoint này không hội tụ.** MAE nhiệt 12,7 và 8,8 °C so với 0,51
+của COD; riêng dải 25-200 °C thì MAE 37,8 °C, tức model không bám quỹ đạo và tỷ
+số biên độ ở đó không nói gì về spectral bias. Ở hai dải model còn bám được
+(10-15 và 15-25 °C, MAE 2,2-4,5 °C) thì mất 17-28% biên độ, và tỷ số **không**
+xấu đi theo biên độ mà tốt lên (0,774 → 0,828 ở Mono FAIR). Sụp xuống 0,61 xảy
+ra cùng lúc với MAE bùng nổ.
+
+Audit M-2 đã kết luận lỗi monolithic *tăng* 47 lần khi capacity tăng 16 lần, với
+causal weight underflow về 0 — tức "không train được baseline này", không phải
+"kiến trúc này không biểu diễn được hệ". Quy phần mất biên độ cho spectral bias
+là lặp đúng suy luận đó. Quy tắc repo giữ nguyên: model không hội tụ thì báo cáo
+là không hội tụ. Thêm nữa mọi checkpoint monolithic đều dính lỗi J-8 (số mũ
+nhiệt bị che thành 12 thay vì 0,8 lúc train).
+
+**Ablation A không chạy được: checkpoint không tồn tại.** Cả
+`ablation_a_no_baseline.pt` lẫn `transformer_pideepOnet_abl_A_no_baseline.pt`
+đều không nằm trong `reference/artifacts/`; `cod/models/cod.py` đã ghi điều này
+ở `CODNoBaseline`. Monolithic đổi **hai** biến cùng lúc (bỏ baseline H *và* bỏ
+cascade khí), nên không phải phép thử một biến.
+
+Kết luận thao tác: lập luận "delta-learning giữ khoảng cách Jensen trước spectral
+bias" **chưa được phép viết vào bài**. Nó cần một model không-baseline **đã hội
+tụ**. Đường rẻ nhất là retrain `CODNoBaseline` trên phân phối fix 7 với đúng
+ngân sách của COD rồi chạy lại script này — một lần train. Nếu vẫn không hội tụ
+dưới ngân sách công bằng thì báo cáo đó là kết quả hội tụ và bỏ tuyên bố
+spectral bias, không dựa nó lên checkpoint hỏng.

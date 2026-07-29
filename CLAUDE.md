@@ -65,3 +65,13 @@ không bị ngắt, và script còn lưu lại được để chạy lại.
 
 Git identity đã cấu hình sẵn trong repo. Dùng `git commit` trực tiếp,
 không cần `git -c user.name=... commit`.
+
+KHÔNG dùng heredoc Python inline (`python - <<'EOF'`). Mỗi lần như vậy đều
+kích hoạt prompt xin phép vì bộ phân tích tĩnh không đọc được f-string và
+dấu chấm phẩy, và không thể auto-allow bằng bất kỳ cấu hình nào.
+
+Thay vào đó: ghi file vào `audit_port/scripts/` rồi chạy bằng
+`python audit_port/scripts/NN_ten.py`. Lệnh này đã nằm trong allowlist nên
+chạy không hỏi, và script còn lưu lại được để chạy lại.
+
+Cũng áp dụng cho việc sửa file: dùng công cụ Edit thay vì `cat >>` hay `sed`.
