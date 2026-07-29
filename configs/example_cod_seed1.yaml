@@ -77,7 +77,21 @@ training:
   batch_size: 64
   convergence:
     max_epochs: 25000
-    max_wall_seconds: 3600
+    # 7200 s, and deliberately NOT the C-11 figure. DO NOT INHERIT THIS.
+    #
+    # The 3600 s this replaced belongs to the C-11 fairness protocol, where equal
+    # wall clock across architectures is the whole point (audit B-1: the same
+    # 25,000 epochs ran 4.6x apart in time). O-5 is not a comparison. It is a
+    # sanity check that fixes 1-9 broke nothing, and a non-converged model cannot
+    # answer that question at all — it would leave "did the physics fixes break
+    # training?" and "did the budget bind?" confounded.
+    #
+    # Different purpose, different budget. The tier-1 matrix budget is a separate
+    # decision, taken later: set it where COD converges comfortably, then apply
+    # that same figure to every architecture in the matrix. Copying 7200 out of
+    # this file into a comparison config would import a number chosen for a
+    # different reason.
+    max_wall_seconds: 7200
     patience: 20
     min_delta_rel: 1.0e-3
     check_every: 100

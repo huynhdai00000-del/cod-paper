@@ -16,7 +16,7 @@ any model was trained" is checkable rather than asserted (`cod/config.py`).
 
 | config | sampler | config hash | distribution hash |
 |---|---|---|---|
-| `configs/example_cod_seed1.yaml` | `realistic` | `95b56b1d79ac7c40` | **`fc4cb76c3b32ec17`** |
+| `configs/example_cod_seed1.yaml` | `realistic` | `c5715352d1ddf87e` | **`fc4cb76c3b32ec17`** |
 | `configs/v57_faithful.yaml` | `v57` | `4cc034c6b60de703` | **`3ad5f68876934c75`** |
 
 Enforce on the command line:
@@ -28,6 +28,13 @@ python scripts/run.py --config configs/example_cod_seed1.yaml \
 
 Any intentional change goes in `CHANGELOG_DISTRIBUTION.md` with date and reason,
 the hash here is updated, and the change is disclosed in the paper.
+
+The two hashes move independently, and that is the point of reporting them
+separately. Raising `training.convergence.max_wall_seconds` from 3600 to 7200 on
+2026-07-30 moved the config hash from `95b56b1d79ac7c40` to `c5715352d1ddf87e`
+and left the distribution hash untouched — a budget is not a distribution. Only
+a change to the latter is a change to what the model is being trained on, and
+only that needs a `CHANGELOG_DISTRIBUTION.md` entry.
 
 ## 2. What the hash now covers, and what it still does not
 

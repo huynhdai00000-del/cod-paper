@@ -133,6 +133,16 @@ phải báo cáo. Trích Lu et al. 2022 (CMAME 393:114778, 16 benchmark, FAIR) l
 khung. Model không hội tụ báo cáo là không hội tụ kèm learning curve, không
 quy thành con số hiệu năng.
 
+**Ngân sách wall-clock của ma trận là quyết định RIÊNG, chưa lấy (2026-07-30).**
+`example_cod_seed1.yaml` để `max_wall_seconds: 7200`, và con số đó **không phải**
+ngân sách ma trận. O-5 không phải phép so sánh: nó hỏi fix 1-9 có làm hỏng gì
+không, mà model không hội tụ thì không trả lời được câu đó — sẽ lẫn "fix vật lý
+làm hỏng train" với "ngân sách chặn". Khác mục đích thì khác ngân sách.
+
+Cách lấy số cho ma trận, khi tới lúc: đặt ở mức COD hội tụ thoải mái, rồi áp
+đúng con số đó cho mọi kiến trúc. Không chép 7200 từ config O-5 sang, vì nó được
+chọn vì lý do khác. Đã ghi chú ngay tại chỗ định nghĩa trong config.
+
 **Giao thức trung thực chu kỳ (thêm 2026-07-29).** Mọi model trong ma trận, kể
 cả tầng 0 và tầng 3, phải báo cáo **ba** thứ chứ không chỉ MAE nhiệt:
 

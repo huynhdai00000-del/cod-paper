@@ -1,11 +1,19 @@
-# Handover — what to run on Colab
+# Colab runbook — the training step
 
-Written 2026-07-29 at commit `468a6be`, after the audit phase closed. Pin that
-sha in the Colab clone so the run is reproducible.
+**Nothing is handed over here.** The division of labour is unchanged: Claude
+Code writes the code and runs every CPU analysis on the development machine;
+Đại runs the training, because GPU access is the one thing that cannot be done
+from here (DECISIONS C-2, C-5). This document covers that single step, plus the
+decisions attached to it, so the run does not depend on remembering a
+conversation.
 
-Only **one** thing needs Colab. Everything after it is CPU analysis on the
-development machine, and two of those scripts need a small edit first — see §3,
-which is honest about what is not yet runnable.
+Written 2026-07-29 after the audit phase closed, budget revised 2026-07-30. Pin
+a commit sha in the Colab clone so the run is reproducible; anything from
+`04da75f` onward contains the runbook, and the budget change is later than that.
+
+Everything downstream of the training run stays on the development machine. Two
+of those scripts need an edit before they will run at all — §3 says which and
+why, rather than listing them as though they were ready.
 
 ---
 
@@ -30,9 +38,9 @@ proves it.
 | phase | time | note |
 |---|---|---|
 | data generation | **8-10 min** | measured on 4 CPU cores at 59-75 ms/IC for 8000 ICs; it is CPU-bound, so the GPU does not help |
-| training | **up to 60 min** | `max_wall_seconds: 3600` is a hard cap |
+| training | **up to 120 min** | `max_wall_seconds: 7200` is a hard cap; it may stop earlier on the patience criterion |
 | evaluation | a few min | 100 RK45 test cases |
-| **total** | **~70-80 min** | |
+| **total** | **up to ~2h 15m** | less if it converges before the cap, which is the intended outcome |
 
 Data generation is slower than it used to be because each sample now runs a
 periodic burn-in over the 24 h cycle to derive its initial condition. That is
@@ -61,14 +69,23 @@ is either silence or:
       stop_reason='epoch_budget' and its learning curve.
 ```
 
-`max_epochs: 25000` against `max_wall_seconds: 3600` means **the wall clock is
-likely to bind first on a T4**, giving `stop_reason='wall_clock'`. That is the
-fair-budget protocol working as designed (audit B-1: equal wall clock, not equal
-epochs), but it still means non-converged, and a non-converged run cannot be
-quoted as a performance number. If that happens, send me `run.json` rather than
-the printed metrics — the decision is whether to raise the budget or accept the
-wall-clock stop as the honest answer, and that is a protocol decision, not a
-number to read off.
+The budget was raised from 3600 s to 7200 s on 2026-07-30 for this reason. **The
+3600 s figure belonged to the C-11 fairness protocol**, where equal wall clock
+across architectures is the entire point (audit B-1: the same 25,000 epochs ran
+4.6x apart in time). O-5 is not a comparison — it asks whether fixes 1 through 9
+broke anything — and a non-converged model cannot answer that, because it leaves
+"did the physics fixes break training?" confounded with "did the budget bind?".
+Different purpose, different budget.
+
+**That 7200 is not the matrix budget and must not be copied into one.** The
+tier-1 figure is a separate decision taken later: set it where COD converges
+comfortably, then apply that same number to every architecture. The config says
+so at the point of definition so it cannot be inherited by accident.
+
+If it still stops on `wall_clock` at 7200 s, send me `run.json` rather than the
+printed metrics. Two hours of T4 not reaching convergence on a config that used
+to train in well under one is itself the finding, and the next step is to read
+the learning curve, not to raise the number again.
 
 **In `run.json`:**
 
@@ -93,7 +110,10 @@ yet. If it is still firing at the end of a full 8000-IC run, that is a real
 finding and needs reporting, not ignoring: it means the loss is being evaluated
 somewhere the model did not predict.
 
-**Bring back:** the checkpoint and `run.json`.
+**Bring back:** the checkpoint and `run.json`. `run.json` is the one that matters
+for deciding what happens next — it carries `stop_reason`, the loss history and
+the 22 resolved sampler parameters, which is everything needed to pick the work
+back up without re-reading a conversation.
 
 ---
 
@@ -111,12 +131,17 @@ what O-5 is for: confirm fix 1 broke nothing. It is not a number for the paper.
 
 ---
 
-## 3. After the checkpoint comes back — local CPU, and not yet runnable
+## 3. After the checkpoint comes back — development machine, and not yet runnable
+
+Back to the normal division of labour: these run on CPU here, and Claude Code
+writes them. They are listed so the sequence is on record, not because they are
+waiting on anyone with a GPU.
 
 These are the two things the audit phase left explicitly open. **Neither is a
 straight rerun**; both point at the v57 checkpoint and the v57-era test set, so
-they need an edit first. Tell me when you have the checkpoint and I will make
-them.
+they need an edit first. Send `run.json` and the checkpoint and the edits get
+made then — they are deliberately not made in advance, because what the retrained
+model's flags should be depends on what the run reports.
 
 **3a. Swing fidelity on the retrained model** —
 `audit_port/scripts/18_swing_fidelity.py`. Needs two changes: `build_models`
