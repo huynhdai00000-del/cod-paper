@@ -219,6 +219,21 @@ và được báo cáo kèm độ nhạy. Không mở lại để đi hiệu ch�
 ### O-5. Retrain COD trên physics đã sửa
 Cấu hình `example_cod_seed1.yaml`, 12 giờ, 1 seed, khoảng 45 phút. Mục đích: xác nhận fix 1 không phá gì. Không phải số cho bài.
 
+**Đã gỡ chặn 2026-07-29 (fix 9, commit 1386af1).** Trước đó O-5 bị chặn chứ
+không phải chỉ chờ: `run.py` sinh dữ liệu bằng sampler v57 cũ trong khi mọi con
+số Jensen ở `audit_port/` tính trên `build_realistic_set`. Train một phân phối
+rồi báo cáo từ một phân phối khác — đúng loại lệch mà audit tìm ra ở bản thảo
+gốc. Giờ `distribution.sampler.kind = realistic`, đủ 22 tham số nằm trong khối
+được băm, `from_config` từ chối config thiếu **hoặc** thừa khoá.
+
+Train trên hash **`fc4cb76c3b32ec17`**. Đóng băng chỉ có nghĩa vì chưa có gì
+train trên nó; đóng băng sau khi train là biên bản, không phải giao thức.
+
+Sau khi retrain, chạy lại theo thứ tự: `18_swing_fidelity.py` (số hiện tại là
+của v57 trong phân phối v57), rồi `19_verify_bias_fix.py` với model thật để lấy
+sai số nhiệt rollout thật — thứ O-9 còn để mở và là thứ quyết định có công bố
+được con số end-of-life hay không.
+
 ### O-7. Thiết kế thí nghiệm rollout
 Reference bằng LSODA chạy liên tục toàn chân trời, không chia cửa sổ. Đo sai số theo số cửa sổ đã roll. Tách bias hệ thống khỏi sai số ngẫu nhiên. Chỉ số cuối: sai số thời điểm end-of-life theo tháng. Thử cả cửa sổ 12h và 24h.
 
