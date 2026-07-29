@@ -29,6 +29,28 @@ CHỈ dừng lại và báo cáo trong ba trường hợp:
 - `.detach()` trên thermal grid là hành vi cố ý của cascade, không phải bug.
 - Thư mục `reference/` là chỉ đọc. Không sửa gì trong đó.
 
+### Mọi phát biểu định lượng phải có script kiểm chứng
+
+Không khẳng định một con số trong docstring, PORT_LOG hay báo cáo nếu chưa có
+script đo nó. Viết script trước, chạy, rồi mới viết con số — và giữ script lại
+trong `audit_port/scripts/` để chạy lại được.
+
+Áp dụng cho: "hai cách này khớp nhau đến X", "sai số dưới Y", "nhanh hơn Z lần",
+"không đổi", "tương đương". Nếu định viết một con số kèm đơn vị hoặc một phát
+biểu về độ khớp, câu hỏi là: script nào in ra nó?
+
+Lý do, từ một lần đã xảy ra (PORT_LOG J-70, fix 8): docstring của
+`cyclic_endpoint_theta` viết rằng nghiệm giải tích và RK45 "khớp nhau đến dưới
+0,01 °C" — viết trước khi đo. Đo thật thì lệch **0,11 đến 0,30 °C**, tăng theo
+tải, vì recurrence dạng đóng đẩy theta_TO về một `theta_ss` cố định trong khi
+`fac_n` của ODE thật lại phụ thuộc chính theta_TO qua `Rf`. Con số sai đó nằm
+dưới một thước đo có nhiệm vụ phân giải sai số cỡ 0,5 °C, tức đúng loại lỗi mà
+O-9 vừa gỡ, ở một tầng sâu hơn và khó thấy hơn. Viết `19_verify_bias_fix.py` là
+thứ bắt được nó.
+
+Hệ quả kèm theo: script kiểm chứng phải **fail được**. Đặt ngưỡng và trả exit
+code khác 0, đừng chỉ in số ra rồi tự đọc.
+
 ## Bối cảnh
 
 Bản thảo bị JCP desk-reject vì originality. Audit tìm ra 6 vấn đề blocking:
