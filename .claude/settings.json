@@ -1,4 +1,4 @@
-﻿{
+{
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": [
@@ -6,16 +6,35 @@
       "Bash(python *)", "Bash(python3 *)", "Bash(pip install *)", "Bash(pytest *)",
       "Bash(ls *)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
       "Bash(find *)", "Bash(grep *)", "Bash(mkdir *)", "Bash(cp *)", "Bash(mv *)",
+      "Bash(echo *)", "Bash(tasklist *)",
+      "Bash(cd * && *)", "Bash(* > *)", "Bash(* >> *)",
       "Bash(git status)", "Bash(git diff *)", "Bash(git log *)",
-      "Bash(git add *)", "Bash(git commit *)", "Bash(git push)"
+      "Bash(git show *)",
+      "Bash(git add *)", "Bash(git commit *)", "Bash(git push)",
+      "Bash(git stash push *)", "Bash(git restore --staged *)"
     ],
     "deny": [
       "Bash(rm -rf *)",
-      "Bash(git push --force*)", "Bash(git push -f*)",
-      "Bash(git reset --hard*)", "Bash(git clean*)",
-      "Bash(curl *)", "Bash(wget *)",
-      "Read(**/.env)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
       "Bash(git push origin +*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean*)",
+      "Bash(git checkout --*)",
+      "Bash(git stash drop*)",
+      "Bash(git stash clear*)",
+      "Bash(git filter-branch*)",
+      "Bash(git rebase*)",
+      "Bash(git commit --amend*)",
+      "Bash(git remote set-url*)",
+      "Bash(git branch -D*)",
+      "Bash(git tag -d*)",
+      "Bash(taskkill //IM*)",
+      "Bash(taskkill /IM*)",
+      "Bash(pip uninstall*)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Read(**/.env)"
     ]
   }
 }
