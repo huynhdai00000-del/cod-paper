@@ -55,6 +55,53 @@ Bài phải trích những nguồn này và định vị phương pháp là mộ
 ### C-9. Metric: đơn vị vật lý là chính
 MAE tuyệt đối (°C, ppm, DP) làm chỉ số chính, NMAE làm phụ kèm tỷ lệ chạm sàn. Ba tầng test không bao giờ gộp.
 
+**Siết thêm 2026-08-02: NMAE khí bỏ hoàn toàn, không còn là chỉ số phụ.** Đây là
+thắt chặt C-9 chứ không mở lại: C-9 vẫn đúng, chỉ là "phụ" còn quá rộng cho khí.
+
+Đo bằng `audit_port/scripts/28_gas_nmae_floor.py`, chỉ trên ground truth nên
+không phụ thuộc model nào. Biến thiên trung vị trong cửa sổ 12 h, so với ngưỡng
+kỹ thuật của chính state đó (`cod/eval/metrics.py`), trên tập T1 hiện thực:
+
+| state | biến thiên trung vị | ngưỡng | tỷ lệ |
+|---|---|---|---|
+| theta_TO | 16,72 °C | 2 °C | **836%** |
+| c_H2 | 0,00093 ppm | 2 ppm | 0,046% |
+| c_C2H2 | 0,000014 ppm | 1 ppm | **0,001%** |
+| c_C2H4 | 0,00023 ppm | 2 ppm | 0,012% |
+| c_CO | 0,0018 ppm | 5 ppm | 0,035% |
+| c_CO2 | 0,0035 ppm | 10 ppm | 0,035% |
+
+Cả năm khí có mẫu số thấp hơn ngưỡng đo được 3 đến 5 bậc. Chia hai số đều nằm
+dưới khả năng phân giải của thiết bị cho nhau là một tỷ số **hợp lệ về số học và
+rỗng về vật lý**.
+
+Hai cơ chế, phải phân biệt vì chúng cho kết luận khác nhau nếu chỉ nhìn một cái:
+
+1. **Chạm sàn.** `eval/benchmark.py` có sàn 1e-4. Trên T1 hiện thực, sàn ăn 75%
+   số case `c_C2H2` (v57: 38%), và biến thiên trung vị thật là 1,4e-05, tức
+   **dưới sàn 7 lần** — con số "mẫu số trung vị 0,0001" báo ra chính là cái sàn,
+   không phải tín hiệu. Phần trăm khi đó là `MAE / 1e-4`, sai số tuyệt đối đội lốt
+   phần trăm.
+2. **Mẫu số nhỏ nhưng trên sàn.** `c_CO` và `c_CO2` **không chạm sàn lần nào**
+   (0%), nên tiêu chí sàn tha chúng — nhưng mẫu số vẫn chỉ bằng 0,035% ngưỡng.
+   Tỷ số hợp lệ, vô nghĩa.
+
+Nếu chỉ dùng tiêu chí sàn thì sẽ kết luận sai rằng CO/CO2 còn dùng được.
+
+**Điều này đúng cả trên benchmark v57** (0,07% đến 0,92% ngưỡng), tức NMAE khí
+**chưa bao giờ** có nghĩa. Con số 34.558% acetylene mà audit tìm ra là cùng một
+lỗi nhìn từ phía kia. Không phải bộ lấy mẫu hiện thực làm hỏng thước đo — nó chỉ
+phơi ra rằng khí gần như không đổi trong 12 giờ, mà đó là vật lý của
+`k_gen·V_arr/k_dis` trên cửa sổ nửa ngày, không phải lỗi mô hình. IC nhất quán
+còn làm rõ hơn vì mỗi máy khởi động gần cân bằng khí của chính nó thay vì lệch
+30 °C (M-9).
+
+**Quy tắc thao tác:** không trích bất kỳ phần trăm khí nào từ benchmark này —
+không ở bảng chính, không ở phụ lục, không kèm chú thích. Báo cáo ppm tuyệt đối
+so với ngưỡng IEC 60599. `theta_TO` không bị ảnh hưởng (836% ngưỡng, không bao
+giờ chạm sàn) nên NMAE nhiệt vẫn dùng được. Xem
+`audit_port/GAS_NMAE_FLOOR.md`.
+
 ### C-10. Trụ của bài là khoảng cách Jensen
 Arrhenius lồi nên tích phân trên quỹ đạo khác giá trị tại nhiệt độ trung bình. Với dao động sin biên độ A quanh 100 °C:
 

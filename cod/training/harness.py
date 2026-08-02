@@ -89,6 +89,47 @@ class PathologyReport:
     nonfinite_loss_epochs: list[int] = field(default_factory=list)
     grad_norm_final: float | None = None
 
+    def clamp_onset_table(self, history: dict[str, list[float]],
+                          threshold: float = 0.05) -> str:
+        """When each clamp was active, not just how hard it peaked.
+
+        The distinction the peak alone cannot make: a clamp that fires while the
+        weights are still random and stops within the first few hundred epochs is
+        a startup transient and benign. A clamp still firing past the midpoint
+        means the physics loss was evaluated at a clamped state — not at what the
+        model predicted — for a large part of training, which invalidates the run
+        as a measurement of the model.
+
+        `last_active` is the last epoch above `threshold`, expressed as a fraction
+        of training, which is the number that separates the two cases.
+        """
+        if not history:
+            return "(no clamp history recorded)"
+        lines = ["| clamp | peak | peak epoch | first active | last active | "
+                 "% of training active | verdict |", "|---|---|---|---|---|---|---|"]
+        for name, series in sorted(history.items()):
+            arr = list(series)
+            n = len(arr)
+            if n == 0:
+                continue
+            peak = max(arr)
+            peak_ep = arr.index(peak) + 1
+            active = [i + 1 for i, v in enumerate(arr) if v > threshold]
+            if not active:
+                lines.append(f"| {name} | {peak:.1%} | {peak_ep} | - | - | 0.0% | "
+                             "never above threshold |")
+                continue
+            first, last = active[0], active[-1]
+            frac_active = len(active) / n
+            last_frac = last / n
+            verdict = ("startup transient" if last_frac <= 0.25 else
+                       "**past the midpoint**" if last_frac > 0.5 else
+                       "into the second quarter")
+            lines.append(
+                f"| {name} | {peak:.1%} | {peak_ep} | {first} | {last} "
+                f"({last_frac:.0%} through) | {frac_active:.1%} | {verdict} |")
+        return "\n".join(lines)
+
     def warnings(self) -> list[str]:
         out = []
         if self.causal_weight_underflowed:
@@ -136,6 +177,15 @@ class TrainingOutcome:
     #: decided `converged` cannot be plotted or re-examined — and README rule 5
     #: requires a non-converged model to be reported *with* its learning curve.
     val_history: list[tuple[int, float]] = field(default_factory=list)
+    #: `{clamp_name: [fraction per epoch]}`. The peak and the final value cannot
+    #: distinguish "fired while the weights were random and then stopped" from
+    #: "still firing at the midpoint", and only the second invalidates a run —
+    #: the loss would be evaluated at a clamped state, not the predicted one, for
+    #: a large part of training. A summary statistic cannot answer a question
+    #: about *when*, so the series is kept.
+    clamp_history: dict[str, list[float]] = field(default_factory=dict)
+    #: Minimum causal weight per epoch, same argument.
+    causal_weight_history: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -163,6 +213,8 @@ def train(
     report = PathologyReport()
     history: list[float] = []
     val_history: list[tuple[int, float]] = []
+    clamp_history: dict[str, list[float]] = {}
+    causal_weight_history: list[float] = []
 
     best_val = float("inf")
     stale_checks = 0
@@ -188,6 +240,7 @@ def train(
             report.causal_weight_min = (
                 wm if report.causal_weight_min is None
                 else min(report.causal_weight_min, wm))
+            causal_weight_history.append(wm)
             if wm <= 0.0:
                 report.causal_weight_underflowed = True
 
@@ -197,6 +250,7 @@ def train(
                 report.clamp_hit_fraction_final[name] = v
                 report.clamp_hit_fraction[name] = max(
                     report.clamp_hit_fraction.get(name, 0.0), v)
+                clamp_history.setdefault(name, []).append(v)
 
         if pathology_hook is not None:
             pathology_hook(epoch, metrics)
@@ -245,6 +299,8 @@ def train(
         loss_history=history,
         pathology=report,
         val_history=val_history,
+        clamp_history=clamp_history,
+        causal_weight_history=causal_weight_history,
     )
 
     for w in report.warnings():

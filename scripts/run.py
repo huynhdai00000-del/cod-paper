@@ -433,6 +433,13 @@ def main() -> int:
         "data_provenance": data_provenance,
     }
     # loss_history can be 25,000 floats; keep the file readable.
+    # The clamp and causal-weight series are the same size and go to their own
+    # file for the same reason. They are not optional detail: the peak alone
+    # cannot say whether a clamp fired only while the weights were random or was
+    # still firing at the midpoint, and only the second invalidates the run.
+    clamp_hist = extra["outcome"].pop("clamp_history", {})
+    cw_hist = extra["outcome"].pop("causal_weight_history", [])
+    extra["outcome"]["clamp_history_len"] = {k: len(v) for k, v in clamp_hist.items()}
     hist = extra["outcome"].pop("loss_history", [])
     extra["outcome"]["loss_history_len"] = len(hist)
     extra["outcome"]["loss_history_head"] = [round(float(x), 8) for x in hist[:20]]
@@ -441,6 +448,11 @@ def main() -> int:
     path = write_run_record(out_dir, cfg.summary(), seed, extra=extra)
     (out_dir / "loss_history.json").write_text(
         json.dumps([float(x) for x in hist]), encoding="utf-8")
+    (out_dir / "clamp_history.json").write_text(
+        json.dumps({"clamp": clamp_hist, "causal_weight_min": cw_hist}),
+        encoding="utf-8")
+    print("\n--- when each clamp was active ---")
+    print(outcome.pathology.clamp_onset_table(outcome.clamp_history))
 
     # The per-case predictions and ground truth, so every table in the paper can
     # be rebuilt offline. run.json holds aggregates only, and an aggregate cannot
