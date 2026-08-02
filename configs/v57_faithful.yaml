@@ -100,7 +100,12 @@ evaluation:
     # the TV waveform sits inside every training marginal (audit B-5), and 14 of
     # 50 constant-K cases extrapolate past the training K range (audit M-8, whose
     # own count of 20 is a slip -- PORT_LOG J-9).
-    T1_in_distribution: {n_cases: 100, seed: 999, n_eval_times: 50}
+    # `source: v57_benchmark` and the label agree here, and that is the point of
+    # declaring it: this config trains on the v57 sampler, so the v57 benchmark
+    # really is in-distribution for it. The same tier under the realistic sampler
+    # is not, which is why the source is now stated rather than assumed.
+    T1_in_distribution: {n_cases: 100, seed: 999, n_eval_times: 50,
+                         source: v57_benchmark}
   ground_truth:
     solver: RK45
     rtol: 1.0e-8

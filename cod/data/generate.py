@@ -202,7 +202,13 @@ def load_training_set(path: str | Path) -> TrainingSet:
 # ═══════════════════════════════════════════════════════════════════════════
 @dataclass
 class TestCase:
-    """One evaluation case. `kind` is 'CK' (constant K) or 'TV' (time-varying)."""
+    """One evaluation case. `kind` is 'CK' (constant K) or 'TV' (time-varying).
+
+    `family` names the sampler family the case came from where there is one. The
+    v57 benchmark has no families — its two halves *are* CK and TV — so it leaves
+    this None. The realistic sampler does, and losing it would make it impossible
+    to say which load families a stratified result is really about.
+    """
 
     idx: int
     kind: str
@@ -210,11 +216,20 @@ class TestCase:
     K_sensors: np.ndarray
     Ta_sensors: np.ndarray
     K_mean: float
+    family: str | None = None
 
 
 def build_test_set(n_test: int = 100, seed: int = 999, T: float = TW,
                    steady_state=None) -> list[TestCase]:
     """The seed-999 benchmark: first half constant K, second half time-varying.
+
+    **This is the v57-era benchmark and it is not in the distribution of anything
+    trained on the realistic sampler.** It consults no config: the IC comes from
+    `profiles.sample_consistent_ic` (audit M-9) and both waveforms are hardcoded
+    below at a 720 min load period, which is the N-6 defect fix 7 removed from
+    training. `audit_port/TEST_SET_PROVENANCE.md` measures the gap on nine axes.
+    Use `build_realistic_test_set` for `T1_in_distribution`; this stays as the
+    Phase 1 reproduction benchmark and as a deliberate out-of-family tier.
 
     Draw order per case, which must not change:
         1. sample_consistent_ic(rng)                      (5 rng calls)
@@ -255,6 +270,60 @@ def build_test_set(n_test: int = 100, seed: int = 999, T: float = TW,
     return cases
 
 
+#: Half peak-to-peak of the in-window load below which a case is called constant.
+#: 5e-3 in K, which at the sampler's operating point is well under 0.1 degC of
+#: hot-spot swing — far below anything the Jensen argument can resolve.
+CK_THRESHOLD = 5e-3
+
+
+def build_realistic_test_set(n_test: int = 100, seed: int = 999,
+                             params=None, T: float = TW,
+                             n_sensors: int = N_SENSORS) -> list[TestCase]:
+    """The in-distribution benchmark: the frozen sampler at a held-out seed.
+
+    This is what `T1_in_distribution` has to mean once the training data comes
+    from `build_realistic_set`. `build_test_set` below cannot serve that role and
+    the reason is not a detail — it calls `profiles.sample_consistent_ic`, which
+    draws `theta_TO(0)` from a load unrelated to the profile (audit M-9), and it
+    hardcodes its own two waveforms at a 720 min load period. Measured against the
+    frozen sampler in `audit_port/TEST_SET_PROVENANCE.md`, seven of nine
+    distributional axes fall outside training support, including 37% of cases
+    whose mean hot-spot is outside the band the sampler clips to and 30% whose ICs
+    sit above the physics-loss state clamp. Scoring a realistic-sampler model on
+    it and calling the result in-distribution is the train/test mismatch the
+    freeze work exists to prevent.
+
+    `seed` must differ from `distribution.seed`, which is what draws the training
+    set. Same sampler, same frozen parameters, different draw — that is what makes
+    it a test set rather than a subset of training.
+
+    `kind` is assigned from the *realised* in-window load variation rather than
+    from the family name, because a family that varies over the day can still
+    produce a nearly flat 12 h window (fix 7 made that a real part of the
+    population). A case is 'CK' when its half peak-to-peak load is below
+    `CK_THRESHOLD`. Consumers that split CK from TV — `eval/benchmark.py`,
+    `18_swing_fidelity.py` — therefore keep working unchanged, and `family`
+    carries the sampler label alongside.
+    """
+    from cod.data.realistic import DEFAULTS
+
+    if params is None:
+        params = DEFAULTS
+    x0s, sensors, days = build_realistic_set(n_test, seed, params, T=T,
+                                             n_sensors=n_sensors,
+                                             return_days=True)
+    cases: list[TestCase] = []
+    for k in range(n_test):
+        K_s = sensors[k, :n_sensors]
+        Ta_s = sensors[k, n_sensors:2 * n_sensors]
+        swing = 0.5 * float(K_s.max() - K_s.min())
+        cases.append(TestCase(
+            idx=k, kind=("CK" if swing < CK_THRESHOLD else "TV"),
+            x0=x0s[k], K_sensors=K_s, Ta_sensors=Ta_s,
+            K_mean=float(K_s.mean()), family=days[k]["kind"]))
+    return cases
+
+
 def solve_test_set(cases: list[TestCase], n_eval: int = 50, T: float = TW,
                    t_clip_frac: float = 0.9999) -> np.ndarray:
     """RK45 ground truth for every case: (n_cases, n_eval, 6)."""
@@ -273,9 +342,9 @@ def save_training_set(ts: TrainingSet, path: str | Path) -> None:
 
 
 __all__ = [
-    "TRAIN_FILE", "TrainingSet", "TestCase", "steady_state_on_grid",
-    "save_training_set",
+    "TRAIN_FILE", "TrainingSet", "TestCase", "CK_THRESHOLD",
+    "steady_state_on_grid", "save_training_set",
     "rk45_ground_truth", "generate_training_set",
     "generate_realistic_training_set", "load_training_set",
-    "build_test_set", "solve_test_set",
+    "build_test_set", "build_realistic_test_set", "solve_test_set",
 ]

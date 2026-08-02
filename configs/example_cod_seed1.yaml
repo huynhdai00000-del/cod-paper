@@ -105,10 +105,28 @@ training:
 
 evaluation:
   rollout_years: 1
+  # `source` is mandatory: it is what makes a tier label checkable instead of
+  # asserted. Every tier used to fall through to the v57-era `build_test_set`
+  # regardless of its name, so the O-5 run trained on the realistic sampler and
+  # reported its score as `T1_in_distribution` when seven of nine distributional
+  # axes were outside training support (audit_port/TEST_SET_PROVENANCE.md).
+  #
+  # This block is NOT inside the frozen `distribution` hash and editing it does
+  # not move `fc4cb76c3b32ec17`. It moves the config hash, which is correct: what
+  # a model is scored on changed, what it is trained on did not.
   tiers:
-    T1_in_distribution: {n_cases: 100, seed: 999}
+    # Same frozen sampler, same 22 parameters, held-out seed. `run.py` refuses
+    # this seed if it equals `distribution.seed`, which would make it training data.
+    T1_in_distribution: {n_cases: 100, seed: 999, source: realistic_sampler}
     T2_extrapolation:   {n_cases: 100, seed: 998, K_base: [0.3, 1.5]}
     T3_out_of_family:   {n_cases: 100, seed: 997, source: ett_load_profiles}
+    # The seed-999 legacy benchmark, under a name that says what it is. Out of
+    # family on the IC sampler (audit M-9: theta_TO(0) drawn from a load unrelated
+    # to the profile, reaching 150 degC), on the load period (720 min against the
+    # trained 1440), and on the operating band (37% of cases outside the
+    # sampler's hot-spot clip). Kept because Phase 1's gates are defined on it
+    # and because a deliberate out-of-family tier is worth having.
+    T3_v57_benchmark:   {n_cases: 100, seed: 999, source: v57_benchmark}
   ground_truth:
     solver: RK45
     rtol: 1.0e-8

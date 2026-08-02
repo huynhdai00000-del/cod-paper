@@ -73,9 +73,19 @@ class ConvergenceCriterion:
 class PathologyReport:
     """Conditions that invalidate a comparison if left unreported."""
 
+    #: Smallest causal weight seen at ANY epoch. It used to be overwritten every
+    #: epoch, so despite the name it reported the *last* epoch's value and a model
+    #: that underflowed early and recovered looked clean. `causal_weight_final`
+    #: keeps what that field actually held, under a name that says so.
     causal_weight_min: float | None = None
+    causal_weight_final: float | None = None
     causal_weight_underflowed: bool = False
+    #: Largest clamp hit fraction seen at any epoch, per clamp. Same defect: the
+    #: single-value field held the last epoch, so training that spent its first
+    #: thousand epochs evaluating the loss at a clamped state reported whatever
+    #: the final epoch happened to be. `clamp_hit_fraction_final` keeps that.
     clamp_hit_fraction: dict[str, float] = field(default_factory=dict)
+    clamp_hit_fraction_final: dict[str, float] = field(default_factory=dict)
     nonfinite_loss_epochs: list[int] = field(default_factory=list)
     grad_norm_final: float | None = None
 
@@ -90,9 +100,13 @@ class PathologyReport:
             )
         for name, frac in self.clamp_hit_fraction.items():
             if frac > 0.05:
+                final = self.clamp_hit_fraction_final.get(name)
+                tail = (f" (peak over training; {final:.1%} at the final epoch)"
+                        if final is not None and abs(final - frac) > 1e-9 else "")
                 out.append(
-                    f"Clamp '{name}' active on {frac:.1%} of samples: the loss "
-                    "is being evaluated at a clamped state, not the predicted one."
+                    f"Clamp '{name}' active on {frac:.1%} of samples{tail}: the "
+                    "loss is being evaluated at a clamped state, not the "
+                    "predicted one."
                 )
         if self.nonfinite_loss_epochs:
             out.append(
@@ -117,6 +131,11 @@ class TrainingOutcome:
     best_val_loss: float
     loss_history: list[float]
     pathology: PathologyReport
+    #: `(epoch, validation_loss)` at every convergence check. The plateau test
+    #: runs on this series, not on `loss_history`, so without it the curve that
+    #: decided `converged` cannot be plotted or re-examined — and README rule 5
+    #: requires a non-converged model to be reported *with* its learning curve.
+    val_history: list[tuple[int, float]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -143,6 +162,7 @@ def train(
     """
     report = PathologyReport()
     history: list[float] = []
+    val_history: list[tuple[int, float]] = []
 
     best_val = float("inf")
     stale_checks = 0
@@ -164,13 +184,19 @@ def train(
         wm = metrics.get("causal_weight_min")
         if wm is not None:
             wm = float(wm)
-            report.causal_weight_min = wm
+            report.causal_weight_final = wm
+            report.causal_weight_min = (
+                wm if report.causal_weight_min is None
+                else min(report.causal_weight_min, wm))
             if wm <= 0.0:
                 report.causal_weight_underflowed = True
 
         for key, value in metrics.items():
             if key.startswith("clamp_frac_"):
-                report.clamp_hit_fraction[key[len("clamp_frac_"):]] = float(value)
+                name, v = key[len("clamp_frac_"):], float(value)
+                report.clamp_hit_fraction_final[name] = v
+                report.clamp_hit_fraction[name] = max(
+                    report.clamp_hit_fraction.get(name, 0.0), v)
 
         if pathology_hook is not None:
             pathology_hook(epoch, metrics)
@@ -182,6 +208,7 @@ def train(
 
         if epoch % criterion.check_every == 0:
             val = float(model.validation_loss())
+            val_history.append((epoch, val))
             improved = val < best_val * (1.0 - criterion.min_delta_rel)
             if improved:
                 best_val = val
@@ -217,6 +244,7 @@ def train(
         best_val_loss=best_val,
         loss_history=history,
         pathology=report,
+        val_history=val_history,
     )
 
     for w in report.warnings():

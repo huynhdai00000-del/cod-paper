@@ -552,6 +552,53 @@ spectral bias, không phải chỉ giảm gánh nặng xấp xỉ.
 Caveat: đo trên checkpoint v57 mà fix 6 đã vô hiệu, chỉ trong phân phối, trên
 sampler cũ. Phải chạy lại sau retrain. Phương pháp thì đã lập.
 
+**N-10. Tập test không nằm trong phân phối huấn luyện — ĐÃ SỬA 2026-08-02.**
+`build_test_set` không đọc config: IC lấy từ `sample_consistent_ic` (M-9), hai
+dạng sóng hardcode ở chu kỳ tải 720 phút, tức đúng lỗi N-6 mà fix 7 đã gỡ khỏi
+tập huấn luyện. O-5 train trên sampler hiện thực rồi chấm trên benchmark v57.
+
+Đo trên 9 trục (`audit_port/TEST_SET_PROVENANCE.md`), **7 trục nằm ngoài** miền
+huấn luyện: theta_TO(0) tới 150 °C so với [38,7; 115,8]; lệch IC 24,82 so với
+3,76 °C; **37%** case có hot-spot trung bình ngoài dải [62, 122] mà sampler kẹp
+theo cấu trúc; **46%** IC khí vượt ngưỡng IEC so với 9,3%; **30%** IC vượt state
+clamp so với 1,0%.
+
+Hệ quả: nhãn `T1_in_distribution` sai, và **1,072 °C không so được với 0,399 °C
+của v57** — một bên ngoài họ phân phối, một bên trong phân phối của chính nó.
+Phép so đó trộn lệch phân phối với tác động của fix 1-9, đúng câu hỏi O-5 muốn
+tách. O-5 vẫn chưa có câu trả lời.
+
+Đã sửa: `build_realistic_test_set` (sampler đã đóng băng, seed tách khỏi seed
+huấn luyện), tier bắt buộc khai báo `source`, `run.py` từ chối tier
+`realistic_sampler` khi train bằng sampler khác và từ chối seed tier trùng
+`distribution.seed`. Khối `distribution` không đụng tới:
+`fc4cb76c3b32ec17` giữ nguyên. Chi tiết ở PORT_LOG J-83.
+
+**N-11. Ba con số của fix 7 phụ thuộc seed, phải rút.** `PERIOD_FIX.md` §2 ghi
+biên độ hot-spot trung vị 13,18 °C, đo ở N=200 seed 999. Đo lại 6 seed, N=500 mỗi
+seed: trung vị theo seed từ 10,767 đến 12,593, **gộp N=3000 ra 11,634 °C**, sd
+giữa các seed 0,668. 13,18 nằm ngoài toàn bộ dải.
+
+Chạy cả hai chu kỳ trên cùng 6 seed, `cycle_period` là tham số duy nhất khác:
+uplift đo được là **0,965** (12,053 -> 11,634), và cả 6 seed đều cho tỷ số dưới 1.
+N-7 ghi 1,177, tính bằng 13,18/11,20 từ hai ước lượng một seed ở N=200 và N=100.
+
+Ba con số phải rút hoặc tính lại: 13,18 °C; uplift 1,177; và dải `K_amp`
+10,2-23,8% vốn là `K_amp` nhân 0,850 = 11,20/13,18, tức thừa hưởng cả hai sai số.
+Con số thứ ba quan trọng nhất vì PERIOD_FIX §2 dùng nó để lập luận rằng phần
+"sampler giả định biên độ quá lớn" là lỗi **chu kỳ** chứ không phải lỗi **biên
+độ** — lập luận biến một điểm yếu thừa nhận thành một chi tiết mô hình đã giải
+quyết. Nếu uplift thật gần 1,0 thì lập luận đó yếu đi và quyết định phạm vi ở
+O-10 mở lại.
+
+**Chưa đủ để bác N-7 hoàn toàn.** Nhánh 720 phút là code hiện tại đặt
+`cycle_period=720`, không phải code trước fix 7: các family dạng sự kiện co giãn
+thời lượng theo `P`, nên ở P=1440 chúng tái hiện đúng 58-144 và 130-216 phút của
+bản cũ còn ở P=720 chỉ bằng một nửa. Hai nhánh vì thế khác nhau cả ở thời lượng
+sự kiện lẫn chu kỳ. Điều đã lập được là **13,18 không tái hiện được và 1,177
+không có cơ sở**; dấu của hiệu ứng chu kỳ thật cần một nhánh dựng từ code trước
+commit 727d77c mới kết luận được. Xem PORT_LOG J-87.
+
 **N-9. Kiểm dự đoán của N-8: đúng chiều, nhưng CHƯA lập được cơ chế.** Chạy
 `18_swing_fidelity.py` trên hai checkpoint không có baseline giải tích:
 

@@ -33,7 +33,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from cod.config import load_config
-from cod.data.generate import (build_test_set, generate_realistic_training_set,
+from cod.data.generate import (build_realistic_test_set, build_test_set,
+                               generate_realistic_training_set,
                                generate_training_set, load_training_set)
 from cod.data.physics import STATE_DIM_FAST, STATE_NAMES_FAST
 from cod.data.realistic import RealisticParams
@@ -142,6 +143,10 @@ def main() -> int:
                     choices=["true_fixed_point", "formula_C"],
                     help="Override the model's analytic attractor. Used to run the "
                          "v57-physics control against the corrected physics.")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="Replace an existing run in the output directory. "
+                         "Without it a collision is an error, not a silent "
+                         "overwrite of the earlier result.")
     ap.add_argument("--train-data", default=None,
                     help="Path to a stored .npz. Required to reproduce a "
                          "checkpoint; omit to generate from the config.")
@@ -171,6 +176,18 @@ def main() -> int:
                f"{cfg['experiment']['variant']}_s{seed}_{cfg.hash}"
                f"{'_smoke' if smoke else ''}"
                f"{('_' + args.tag) if args.tag else ''}")
+
+    # A second run of the same config and seed lands on the same directory name,
+    # so without this the previous run.json, model.pt and loss_history.json are
+    # overwritten in place and the earlier result is gone with no record that it
+    # existed. Two runs that differ only in something outside the config hash —
+    # a code change, a GPU, a library version — are exactly the pair worth
+    # keeping, and provenance is what run.json is for.
+    if (out_dir / "run.json").exists() and not args.overwrite:
+        raise SystemExit(
+            f"[run] {out_dir} already holds a run.json.\n"
+            "  Refusing to overwrite it. Use --tag to name this run separately, "
+            "or --overwrite if replacing the old one is what you mean.")
 
     print(f"[run] config          {args.config}")
     print(f"[run] config hash     {cfg.hash}")
@@ -272,6 +289,34 @@ def main() -> int:
     print(f"[train] loop={loop}  criterion={crit}")
     outcome = train(trainer, crit, log_every=max(1, max_epochs // 5))
 
+    # ── Persist the weights ────────────────────────────────────────────────
+    # Written before evaluation, so a run whose evaluation crashes does not throw
+    # away the training. Until this existed `run.py` wrote run.json and
+    # loss_history.json and dropped the model on exit, which made every downstream
+    # measurement that needs `model(x0, u, t)` — swing fidelity, the rollout
+    # thermal error, the whole C-11 matrix — impossible to run without retraining.
+    #
+    # The buffers `x_mean_TO` / `x_std_TO` are part of `state_dict()`, so a
+    # checkpoint carries its own normalisation and does not depend on regenerating
+    # the training set to be loadable. The hashes travel with it because a
+    # checkpoint whose distribution cannot be identified is not evidence.
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = out_dir / "model.pt"
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "model_kind": cfg["model"]["kind"],
+        "theta_ss_mode": cfg["model"].get("steady_state", "true_fixed_point"),
+        "x_mean": np.asarray(ts.x_mean).tolist(),
+        "x_std": np.asarray(ts.x_std).tolist(),
+        "config_hash": cfg.hash,
+        "distribution_hash": cfg.distribution_hash,
+        "seed": seed,
+        "converged": bool(outcome.converged),
+        "stop_reason": outcome.stop_reason,
+        "config": cfg.raw,
+    }, ckpt_path)
+    print(f"[ckpt] wrote {ckpt_path}")
+
     # ── Evaluate ───────────────────────────────────────────────────────────
     tier_cfg = cfg["evaluation"]["tiers"]
     tier_name = next(iter(tier_cfg))
@@ -280,8 +325,44 @@ def main() -> int:
     guard = float(cfg["evaluation"].get("ground_truth", {})
                   .get("right_edge_guard", 0.9999))
 
-    cases = build_test_set(n_test=n_test, seed=int(tier["seed"]), T=T,
-                           steady_state=ic_formula)
+    # Which distribution the tier is drawn from is a declared property of the
+    # tier, not something inferred from its name. Before this, every tier got
+    # `build_test_set` — the v57-era benchmark — whatever the sampler had been,
+    # so a realistic-sampler run reported an out-of-family score under the label
+    # `T1_in_distribution` (audit_port/TEST_SET_PROVENANCE.md: seven of nine
+    # distributional axes outside training support). A tier now says what it is.
+    tier_source = tier.get("source")
+    if tier_source is None:
+        raise ValueError(
+            f"{args.config}: evaluation.tiers.{tier_name} has no `source`.\n"
+            "  Which distribution a tier draws from decides whether its label is\n"
+            "  true, so it has to be declared:\n"
+            "    source: realistic_sampler   # the frozen sampler, held-out seed\n"
+            "    source: v57_benchmark       # the seed-999 legacy benchmark")
+
+    if tier_source == "realistic_sampler":
+        if kind != "realistic":
+            raise ValueError(
+                f"{args.config}: tier {tier_name} draws from the realistic "
+                f"sampler but training used sampler kind {kind!r}. That is the "
+                "train/test mismatch this check exists to catch.")
+        if int(tier["seed"]) == int(dist.get("seed", 42)):
+            raise ValueError(
+                f"{args.config}: tier {tier_name} uses seed {tier['seed']}, the "
+                "same seed that draws the training set. That is a subset of "
+                "training, not a test set.")
+        cases = build_realistic_test_set(
+            n_test=n_test, seed=int(tier["seed"]),
+            params=RealisticParams.from_config(sampler.get("params", {})), T=T)
+    elif tier_source == "v57_benchmark":
+        cases = build_test_set(n_test=n_test, seed=int(tier["seed"]), T=T,
+                               steady_state=ic_formula)
+    else:
+        raise ValueError(
+            f"{args.config}: evaluation.tiers.{tier_name}.source is "
+            f"{tier_source!r}; expected 'realistic_sampler' or 'v57_benchmark'.")
+    print(f"[eval] tier {tier_name}  source={tier_source}  "
+          f"seed={tier['seed']}  n={n_test}")
     bench = evaluate(model, predict_fn, cases, label=cfg["experiment"]["variant"],
                      T=T, t_clip_frac=guard, device=device)
     print("\n" + bench.summary())
@@ -329,6 +410,11 @@ def main() -> int:
         "fair_comparison_candidate": outcome.is_fair_comparison_candidate(),
         "evaluation": {
             "tier": tier_name,
+            # Without this a run.json cannot say which distribution produced its
+            # numbers, which is how O-5's out-of-family score came to be filed
+            # under `T1_in_distribution`.
+            "tier_source": tier_source,
+            "tier_seed": int(tier["seed"]),
             "n_cases": n_test,
             "right_edge_guard": guard,
             "nmae_per_state_pct": dict(zip(STATE_NAMES_FAST,
@@ -355,7 +441,32 @@ def main() -> int:
     path = write_run_record(out_dir, cfg.summary(), seed, extra=extra)
     (out_dir / "loss_history.json").write_text(
         json.dumps([float(x) for x in hist]), encoding="utf-8")
+
+    # The per-case predictions and ground truth, so every table in the paper can
+    # be rebuilt offline. run.json holds aggregates only, and an aggregate cannot
+    # be un-aggregated: O-2 wants median / p90 / max with the case index of the
+    # max, the C-11 honesty protocol wants a swing table and a Jensen-gap table,
+    # and none of that is recoverable from a mean. Regenerating it costs a full
+    # RK45 pass over the test set plus a forward pass; storing it costs ~250 kB.
+    # float64, not float32. The gas errors are differences of order 1e-4 ppm
+    # between values of order 1e-2, so float32 storage loses ~3e-4 relative on
+    # exactly the quantity the absolute-ppm argument rests on — measured, in
+    # `25_checkpoint_roundtrip.py` check 4, which is what caught it. The file
+    # goes from ~250 kB to ~500 kB.
+    np.savez_compressed(
+        out_dir / "predictions.npz",
+        pred=pred.astype(np.float64), gt=gt.astype(np.float64),
+        t_eval=np.linspace(0, T, 50).astype(np.float64),
+        x0=np.stack([c.x0 for c in cases]).astype(np.float32),
+        K_sensors=np.stack([c.K_sensors for c in cases]).astype(np.float32),
+        Ta_sensors=np.stack([c.Ta_sensors for c in cases]).astype(np.float32),
+        kind=np.array([c.kind for c in cases]),
+        family=np.array([c.family or "" for c in cases]),
+        state_names=np.array(STATE_NAMES_FAST),
+    )
     print(f"\n[run] wrote {path}")
+    print(f"[run] wrote {out_dir / 'predictions.npz'} "
+          f"({pred.shape[0]} cases x {pred.shape[1]} times x {pred.shape[2]} states)")
 
     if not outcome.converged:
         print("[run] This run did NOT converge. Report it as non-converged, "

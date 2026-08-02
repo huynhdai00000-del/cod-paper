@@ -1501,3 +1501,128 @@ of the code, which is what putting it in the config was for.
 New hashes: `fc4cb76c3b32ec17` (realistic) and `3ad5f68876934c75` (v57).
 Supersession recorded in `CHANGELOG_DISTRIBUTION.md`; nothing had been trained on
 the old ones.
+
+### J-83 The evaluation ran on the distribution the freeze work replaced
+
+O-5 trained on the fix-7 realistic sampler and was scored on `build_test_set`,
+which consults no config: the IC comes from `profiles.sample_consistent_ic` (audit
+M-9) and both waveforms are hardcoded at a 720 min load period — the N-6 defect
+fix 7 removed from training. J-81 hoisted `ic_formula` out of the sampler branch
+on the reasoning that "the test set is the seed-999 benchmark regardless of which
+sampler drew the training data". True of the code, false of the distribution.
+
+`21_test_set_provenance.py`, against 300 cases from the frozen sampler:
+
+| axis | test | train |
+|---|---|---|
+| theta_TO(0) range | [21.4, 150.0] | [38.7, 115.8] degC; 20% outside |
+| IC offset from eq(K(0),Ta(0)) | 24.82 | 3.76 degC — **6.6x** |
+| mean hot-spot outside the sampler's [62,122] clip | **37%** | 0% by construction |
+| load cycle period | 720 min | 1440 min |
+| gas ICs above IEC 60599 attention | **46.0%** | 9.3% |
+| ICs above the physics-loss state clamp | **30.0%** | 1.0% |
+
+Seven of nine axes outside training support. `T1_in_distribution` was false, and
+the O-5 numbers are an out-of-family score compared against v57's in-distribution
+one — the comparison confounds distribution shift with the physics fixes.
+
+The same script fingerprints which of the two benchmarks a run.json came from,
+since `denominator_median` depends only on the ground truth: `true_fixed_point`
+gives theta_TO 33.6774 and c_C2H2 0.00153704, `formula_A` gives 32.9834 and
+0.000672627. O-5 reported the first pair, PHASE1_VERIFICATION the second.
+
+Fix: `build_realistic_test_set` (frozen sampler, held-out seed, `kind` from the
+*realised* in-window load swing so `benchmark.py` keeps working, `family`
+alongside); tiers carry a mandatory `source`; `run.py` refuses a
+`realistic_sampler` tier when training used another sampler, and refuses a tier
+seed equal to `distribution.seed`. The `distribution` block is untouched —
+`fc4cb76c3b32ec17` is unchanged; the config hash moved to `eb9dc31ace990670`,
+which is correct, since what the model is scored on changed and what it is
+trained on did not.
+
+### J-84 `run.py` discarded the trained model
+
+There was no `torch.save` anywhere outside `reference/`. Every run wrote run.json
+and loss_history.json and dropped the weights on exit, so O-5's model no longer
+exists and a 40-run C-11 matrix would have thrown away all 40. Now `model.pt` is
+written *before* evaluation, carrying the state dict, both hashes, the seed and
+the converged flag.
+
+`25_checkpoint_roundtrip.py` verifies it end to end across a process boundary:
+train in a subprocess, then reload in a fresh process and rescore. All 30 metric
+comparisons reproduce at **rel 0.00e+00**.
+
+That script also caught a defect in its own author's work: `predictions.npz` was
+first written float32, and check 4 failed at rel 3.5e-4 on `c_H2`, because the gas
+errors are differences of order 1e-4 ppm between values of order 1e-2 — precisely
+the quantity the absolute-ppm argument rests on. Stored float64 now; the tolerance
+was not widened.
+
+### J-85 The pathology counters reported the last epoch, not the worst
+
+`PathologyReport.causal_weight_min` was assigned every epoch, so despite its name
+it held the **final** epoch's value: a model that underflowed early and recovered
+looked clean. `clamp_hit_fraction` had the same defect. Both now keep the extremum
+over training, with `causal_weight_final` / `clamp_hit_fraction_final` preserving
+what the fields used to hold.
+
+This changes how two numbers from the O-5 report are read: `causal_weight_min
+0.9986` and `state_hi 1.56%` were final-epoch values, not worst-over-training.
+The rerun will report both.
+
+Also added: `TrainingOutcome.val_history`, the `(epoch, val_loss)` series the
+plateau test actually runs on. Only its final and best values survived, so the
+curve that decided `converged` could not be plotted — while README rule 5 requires
+a non-converged model to be reported with its learning curve.
+
+### J-86 Two instruments verified before the model they will measure exists
+
+Both scripts take a checkpoint path and both are verified against
+`ExactModel` (RK45 wearing `CODOperator`'s signature, zero error by construction),
+in **both** directions, because a gate that has only ever passed is not verified:
+
+| script | zero-error self-test | falsifiability |
+|---|---|---|
+| `18_swing_fidelity.py` | swing ratio 1.0000, MAE 0.000, PASS on 5 bands | `--smooth-test 0.08` flattens the cycle 8%: ratio 0.948, **FAIL**, exit 1 |
+| `24_rollout_thermal_error.py` | bias 0.0000 degC on all 4 scenarios | `--inject-bias 0.5` recovers **+0.5000** teacher-forced, **FAIL**, exit 1 |
+
+The smoothing test makes this script's whole reason for existing concrete: at 8%
+flattening the thermal MAE is **0.334 degC**, better than v57's headline 0.399,
+while 5% of the swing is gone. MAE cannot see it; the stratified table can.
+
+The injection test also validates the O-7 decomposition. Teacher forcing recovers
+the injected bias exactly (+0.5000), free-running reads +0.507 to +0.511, and the
+excess is the accumulation — which grows monotonically with load, as a hot bias fed
+back into the next window's IC must.
+
+### J-87 The fix-7 swing figures are seed artifacts
+
+`PERIOD_FIX.md` §2 reports a median realised hot-spot swing of 13.18 degC at
+N=200 seed 999. Measured over six seeds at N=500 each (`23_swing_multiseed.py`):
+
+| seed | 42 | 999 | 7 | 123 | 2024 | 31337 |
+|---|---|---|---|---|---|---|
+| median | 11.485 | 12.593 | 11.027 | 12.061 | 11.589 | 10.767 |
+
+Pooled N=3000: **11.634 degC**, between-seed sd 0.668. 13.18 is above the whole
+range — it is one draw at small N of a statistic whose density near the median is
+very flat (p25 7.1, p75 18.5).
+
+Running both period arms over the same six seeds, with `cycle_period` the only
+parameter that differs, the uplift from correcting the period is **0.965**
+(pooled 12.053 -> 11.634), and every one of the six seeds gives a ratio below 1.
+N-7 records 1.177, computed as 13.18/11.20 from two single-seed estimates at
+N=200 and N=100.
+
+**Caveat that stops this being a clean refutation.** The 720 min arm is the
+current sampler with `cycle_period=720`, not the pre-fix-7 code. The event
+families scale their durations with `P` (`0.04-0.10 * P` for a spike,
+`0.09-0.15 * P` for an evening peak), so at P=1440 they reproduce the old absolute
+widths of 58-144 and 130-216 min while at P=720 they are half of them. The two arms
+therefore differ in event duration as well as in period, and shorter events heat
+the oil less. What is established is that **13.18 is not reproducible and 1.177 is
+not supported**; the sign of the true period effect needs an arm built from the
+pre-fix-7 profile code (before commit 727d77c) to settle.
+
+Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
+repo rule.
