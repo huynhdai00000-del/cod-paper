@@ -591,13 +591,66 @@ Con số thứ ba quan trọng nhất vì PERIOD_FIX §2 dùng nó để lập l
 quyết. Nếu uplift thật gần 1,0 thì lập luận đó yếu đi và quyết định phạm vi ở
 O-10 mở lại.
 
-**Chưa đủ để bác N-7 hoàn toàn.** Nhánh 720 phút là code hiện tại đặt
-`cycle_period=720`, không phải code trước fix 7: các family dạng sự kiện co giãn
-thời lượng theo `P`, nên ở P=1440 chúng tái hiện đúng 58-144 và 130-216 phút của
-bản cũ còn ở P=720 chỉ bằng một nửa. Hai nhánh vì thế khác nhau cả ở thời lượng
-sự kiện lẫn chu kỳ. Điều đã lập được là **13,18 không tái hiện được và 1,177
-không có cơ sở**; dấu của hiệu ứng chu kỳ thật cần một nhánh dựng từ code trước
-commit 727d77c mới kết luận được. Xem PORT_LOG J-87.
+**ĐÃ CHỐT 2026-08-02 bằng nhánh trung thực.** Lần đo đầu dùng code hiện tại đặt
+`cycle_period=720`, không phải code trước fix 7, nên lẫn chu kỳ với thời lượng sự
+kiện. `26_prefix7_arm_and_ett_gap.py` dựng nhánh đúng: `cod/data/realistic.py` tại
+`727d77c^`, đọc thẳng từ git. Cả hai nhánh chạy physics hiện tại (commit đó đã có
+fix 1-6 và 8), `K_amp` giống hệt, sampler là khác biệt duy nhất; `cycle_period` là
+trường duy nhất fix 7 thêm vào.
+
+6 seed × N=500 mỗi nhánh:
+
+| | trung vị gộp | sd giữa seed | dải theo seed |
+|---|---|---|---|
+| trước fix 7 (`727d77c^`) | **11,531** | 0,320 | 11,159-12,113 |
+| fix 7 | **11,634** | 0,668 | 10,767-12,593 |
+| tỷ số | **1,0089** | | 0,910-1,110 |
+
+**Sửa chu kỳ đổi biên độ hot-spot thực tế 0,9%.** N-7 ghi 1,177; con số đó nằm
+ngoài dải theo seed.
+
+Chẩn đoán chính xác hơn "cả hai đều nhiễu": **11,20 của sampler cũ là ước lượng
+đúng**, nằm trong dải 11,159-12,113. Sai là ở **13,18** — trung vị thật của nhánh
+fix 7 là 11,634, và seed 999 ở N=200 rút trúng phía cao. Uplift gần như hoàn toàn
+do tử số tạo ra. Đáng chú ý: sd giữa seed của nhánh mới (0,668) gấp đôi nhánh cũ
+(0,320), tức cắt cửa sổ theo pha ngẫu nhiên làm thống kê nhạy seed hơn hẳn — đó là
+lý do ước lượng một seed hỏng ở đúng phía đó.
+
+Ba lý do N-7 nêu để giải thích vì sao 1,378 của sin thuần không thành hiện thực
+(cửa sổ 12 h chỉ thấy nửa chu kỳ ở pha ngẫu nhiên; family sự kiện giữ thời lượng
+tuyệt đối nên không hưởng gì; cửa sổ không chứa sự kiện nay là một phần thật của
+quần thể) vẫn đúng — nhưng đo trung thực thì chúng **triệt tiêu** uplift chứ không
+giảm nó xuống 1,177.
+
+**Hệ quả: PERIOD_FIX §2 không đứng.** Hệ số rescale là **0,9912**, cho `K_amp`
+**11,9-27,8%**, không phải 10,2-23,8%. Đối chiếu ETT: ETTh2 8,7% nằm **dưới** dải;
+ETTh1 không phát ngược 17,8% nằm trong; ETTh1 phát ngược 29,7% nằm trên. §2 lập
+luận rằng phần "sampler giả định biên độ quá lớn" là lỗi **chu kỳ** chứ không phải
+lỗi **biên độ**, "biến một điểm yếu thừa nhận thành một chi tiết mô hình đã giải
+quyết mà không phải chỉnh tay biên độ theo dữ liệu". Sửa chu kỳ đáng 0,9%. Trên
+feeder quy ước, sampler giả định biên độ gấp khoảng hai lần ETTh2, và đó là một
+giả định về **biên độ**. **O-10 mở lại** đúng trên điều kiện nó đã được để mở:
+benchmark nói về quần thể feeder nào.
+
+**Hai điểm vận hành hiệu chuẩn theo ETT** (C-13 yêu cầu đường cong kèm phân phối
+thật, không phải một con số). `K_amp` đặt bằng đúng trung vị ETT, N=400, seed 999:
+
+| cấu hình | K_amp | biên độ hot-spot thực tế | gap DP | gap C2H2 |
+|---|---|---|---|---|
+| sampler đóng băng | 12-28% | 13,03 °C | 1,469 | 2,079 |
+| ETTh2, mọi ngày | 8,7% | 6,64 °C | **1,113** | **1,232** |
+| ETTh1, không phát ngược | 17,8% | 12,38 °C | **1,420** | **1,896** |
+
+Thấp hơn hẳn headline 1,70 / 2,59, vốn là C-10 tại ±15 °C — biên độ mà **không
+feeder nào trong hai feeder đo được đạt tới**. Điểm ETTh1 không phát ngược gần với
+thứ sampler đóng băng sinh ra, nên benchmark bảo vệ được **với tư cách mô hình của
+feeder đó**; ETTh2 là nơi gap gần như biến mất, khớp với tuyên bố phạm vi N-4.
+
+Lưu ý `K_amp` suy biến cho mọi máy cùng một biên độ tải, nên độ tản của biên độ
+thực tế chỉ đến từ hỗn hợp family, điểm vận hành và pha cửa sổ. Đó là một **điểm
+vận hành**, không phải phân phối đội máy, và không được trích như phân phối.
+
+Xem PORT_LOG J-87 và `audit_port/PREFIX7_ARM_AND_ETT_GAP.md`.
 
 **N-9. Kiểm dự đoán của N-8: đúng chiều, nhưng CHƯA lập được cơ chế.** Chạy
 `18_swing_fidelity.py` trên hai checkpoint không có baseline giải tích:

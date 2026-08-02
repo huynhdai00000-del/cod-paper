@@ -1614,15 +1614,77 @@ parameter that differs, the uplift from correcting the period is **0.965**
 N-7 records 1.177, computed as 13.18/11.20 from two single-seed estimates at
 N=200 and N=100.
 
-**Caveat that stops this being a clean refutation.** The 720 min arm is the
-current sampler with `cycle_period=720`, not the pre-fix-7 code. The event
-families scale their durations with `P` (`0.04-0.10 * P` for a spike,
-`0.09-0.15 * P` for an evening peak), so at P=1440 they reproduce the old absolute
-widths of 58-144 and 130-216 min while at P=720 they are half of them. The two arms
-therefore differ in event duration as well as in period, and shorter events heat
-the oil less. What is established is that **13.18 is not reproducible and 1.177 is
-not supported**; the sign of the true period effect needs an arm built from the
-pre-fix-7 profile code (before commit 727d77c) to settle.
+**Caveat that stopped this being a clean refutation, now removed — see J-88.** The
+720 min arm was the current sampler with `cycle_period=720`, not the pre-fix-7
+code. The event families scale their durations with `P` (`0.04-0.10 * P` for a
+spike, `0.09-0.15 * P` for an evening peak), so at P=1440 they reproduce the old
+absolute widths of 58-144 and 130-216 min while at P=720 they are half of them.
+That arm differed in event duration as well as in period.
 
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
+
+### J-88 The faithful pre-fix-7 arm: the period was worth 0.9%
+
+`26_prefix7_arm_and_ett_gap.py` builds the arm J-87 was missing —
+`cod/data/realistic.py` at `727d77c^`, read straight out of git rather than
+reconstructed, since a hand-maintained snapshot of old code is the thing that
+silently stops matching what it claims to be. Both arms run the current physics,
+steady state and `DailyMeanArrhenius`, because that commit already carries fixes
+1-6 and 8. `cycle_period` is the only field fix 7 added, and `K_amp` is identical,
+so the sampler is the only difference.
+
+6 seeds x N=500 per arm:
+
+| | pooled median | between-seed sd | per-seed range |
+|---|---|---|---|
+| pre-fix-7 (`727d77c^`) | **11.531** | 0.320 | 11.159-12.113 |
+| fix 7 | **11.634** | 0.668 | 10.767-12.593 |
+| ratio | **1.0089** | | 0.910-1.110 |
+
+Correcting the period moved the median realised hot-spot swing by **0.9%**. N-7's
+1.177 is outside the per-seed range; the gate fails with exit 1.
+
+The diagnosis is sharper than "both figures were noisy". PERIOD_FIX's **11.20 for
+the old sampler was a sound estimate** — it lies inside the measured per-seed range.
+It was **13.18** that was the outlier: the fix-7 arm's pooled median is 11.634 and
+seed 999 at N=200 drew high. The uplift was manufactured by the numerator alone.
+The new arm's between-seed sd is double the old one's, which is why a single-seed
+estimate failed on that side specifically: windowing at a random phase makes the
+statistic far more seed-sensitive.
+
+The three reasons N-7 gives for the pure-sinusoid 1.378 not being realised — a
+12 h window sees half a 24 h cycle at random phase, event families keep absolute
+durations and gain nothing, event-free windows are now a real part of the
+population — all still hold. Measured faithfully they do not reduce the uplift to
+1.177; they cancel it.
+
+**Consequence.** The rescale factor is 0.9912, giving `K_amp` 11.9-27.8% rather
+than 10.2-23.8%. ETTh2's 8.7% is below that range, ETTh1 non-back-feeding's 17.8%
+is inside it, ETTh1 back-feeding's 29.7% is above. PERIOD_FIX §2 argues the
+sampler's apparent over-assumption of load swing was a period error rather than an
+amplitude error; the period is worth 0.9%, so on a conventional feeder it is an
+amplitude assumption, and O-10's scope decision reopens on its original terms.
+
+**Two ETT-calibrated operating points**, which is what C-13 asks for instead of one
+contested figure. `K_amp` set to each ETT median, N=400, seed 999:
+
+| setting | K_amp | realised swing | gap DP | gap C2H2 |
+|---|---|---|---|---|
+| frozen sampler | 12-28% | 13.03 degC | 1.469 | 2.079 |
+| ETTh2, all days | 8.7% | 6.64 degC | **1.113** | **1.232** |
+| ETTh1, non-back-feeding | 17.8% | 12.38 degC | **1.420** | **1.896** |
+
+Both sit well below the headline 1.70 / 2.59, which is C-10 at +-15 degC — a swing
+neither measured feeder reaches. A degenerate `K_amp` gives every unit the same
+load amplitude, so the spread in realised swing comes from the family mix, the
+operating point and the window phase alone: an operating point, not a fleet
+distribution, and not to be quoted as one.
+
+One correction made mid-flight and worth recording because it did **not** bind:
+the C-10 cross-check used `np.interp` against a table starting at +-5 degC, which
+clamps everything below 5 degC to a gap of 1.07 — and ETTh2's point was expected
+to land there. The analytic zero node (a constant trajectory has a gap of exactly
+1 by convexity) was added before the final run. All three realised swings turned
+out to exceed 5 degC so no number changed, but left in place it would have floored
+any future run at lower amplitude and read that floor as agreement.
