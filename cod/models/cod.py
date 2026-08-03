@@ -381,12 +381,27 @@ class CODNoBaseline(CODOperator):
     Note the internal inconsistency the audit records (B-2): the same nominal
     Ablation A reports 18.5% in `COD_ablation_study` c10 and 13,437.1% in the
     standalone `PI_DeepONet_abl_A_done`, a factor of ~700. Neither checkpoint is
-    among the supplied artifacts, so this class is ported for completeness and is
-    not exercised by any verification gate.
+    among the supplied artifacts, so this class was ported for completeness.
+
+    FIXED 2026-08-03, and the defect is worth recording. The override carried the
+    pre-fix-1 signature `(self, x0, u, t)` while `forward` and
+    `_thermal_predict_grid` both call `_ode_baseline(..., theta_ss_grid=...)`,
+    which fix 1 added. **Every forward pass raised `TypeError`**, so this class
+    had never run — the docstring's own "not exercised by any verification gate"
+    was the reason it went unnoticed for as long as the argument had existed.
+    O-12 could not have started against it. The signature now matches the parent
+    exactly; `theta_ss_grid` is accepted and ignored, which is correct, because
+    the whole point of this ablation is that the analytic attractor does not reach
+    the output.
+
+    This is the one-variable test N-8 and O-12 need: same network, same trunk,
+    same cascade, same training pipeline as `CODOperator` — only `H` is replaced
+    by the constant `x0`. The monolithic baselines are not a substitute because
+    they change two things at once (no baseline *and* no cascade) and carry J-8.
     """
 
-    def _ode_baseline(self, x0, u, t):
-        return x0
+    def _ode_baseline(self, x0_TO, u_sensors, t, theta_ss_grid=None):
+        return x0_TO
 
 
 def cod_predict(model, x0, u, t, theta_ss_grid=None):

@@ -120,5 +120,5 @@ The reconstruction overstated H2 by 5.6x and understated C2H2 by 3.1x — expect
 **All gates pass.** The port reproduces every stored figure within tolerance from the supplied checkpoints, without retraining anything.
 
 
-Wall clock: 235s on CPU.
+Wall clock: 232s on CPU.
 

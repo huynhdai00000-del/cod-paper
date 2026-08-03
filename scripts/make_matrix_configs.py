@@ -74,6 +74,25 @@ CELLS = {
                  "Same trunk departure as above.",
         "sdeeponet": {"cell": "gru", "trunk_layers": 6},
     },
+    "cod_no_baseline": {
+        "kind": "cod_no_baseline",
+        "notes": "DECISIONS O-12 / N-8, Ablation A. COD with the analytic "
+                 "baseline H replaced by the constant x0 -- same network, trunk, "
+                 "cascade, trainer and budget. ONE variable. The monolithic "
+                 "checkpoints are not a substitute: they drop the baseline AND "
+                 "the cascade, and carry J-8.",
+        "branch": {"layers": 4, "width": 128, "arch": "modified_mlp"},
+        "trunk": {"layers": 3, "width": 128, "arch": "modified_mlp"},
+        "basis_dim": 64,
+        "steady_state": "true_fixed_point",
+    },
+}
+
+#: Cells whose training block must differ from the shared default. Ablation A
+#: uses COD's own loop, because a different trainer would be a second variable
+#: and O-12 is a one-variable test.
+TRAINING_OVERRIDES = {
+    "cod_no_baseline": {"loop": "train_v34"},
 }
 
 
@@ -97,8 +116,10 @@ def main() -> int:
                 **base["training"],
                 # Every baseline uses the shared physics trainer, which is what
                 # makes the budget and the convergence criterion comparable
-                # (C-11: equal wall clock, not equal epochs).
+                # (C-11: equal wall clock, not equal epochs). Ablation A is the
+                # exception and takes COD's loop; see TRAINING_OVERRIDES.
                 "loop": "train_physics",
+                **TRAINING_OVERRIDES.get(stem, {}),
             },
             "evaluation": base["evaluation"],
         }

@@ -41,7 +41,7 @@ from cod.data.realistic import RealisticParams
 from cod.data.steady_state import formula_A, true_fixed_point_np
 from cod.eval.benchmark import evaluate
 from cod.eval.metrics import TRANSFORMER_STATES, evaluate_state, report
-from cod.models.cod import CODOperator, cod_predict
+from cod.models.cod import CODNoBaseline, CODOperator, cod_predict
 from cod.models.fno import (FNO_LAYERS, FNO_MODES, FNO_WIDTH, FNOInCascade,
                             FNOMonolithic, fno_predict)
 from cod.models.mionet import (MIONET_DEPTH, MIONET_P, MIONET_WIDTH,
@@ -62,6 +62,11 @@ from cod.training.train import CODTrainer, SharedPhysicsTrainer
 
 MODEL_BUILDERS = {
     "cod": CODOperator,
+    #: DECISIONS O-12 / N-8, Ablation A. Same network, trunk, cascade and
+    #: pipeline as `cod`; only the analytic baseline H is replaced by the
+    #: constant x0. Built through the `cod` branch below so the two differ in
+    #: exactly one thing — identical parameter count and identical state dict.
+    "cod_no_baseline": CODNoBaseline,
     "monolithic_fair": MonolithicFair,
     "monolithic_multihead": MonolithicMultiHead,
     "monolithic_softic": MonolithicSoftIC,
@@ -128,8 +133,8 @@ def build_model(cfg, x_mean, x_std, device):
                         T=T, x_mean=x_mean, x_std=x_std)
         return model, predict
 
-    if kind == "cod":
-        model = CODOperator(
+    if kind in ("cod", "cod_no_baseline"):
+        model = MODEL_BUILDERS[kind](
             state_dim=STATE_DIM_FAST, n_sensors=n_sensors, d_h=d_h, p=p,
             n_layers=n_layers, n_exp_feats=n_exp_feats, T=T,
             x_mean=x_mean, x_std=x_std,
@@ -152,7 +157,12 @@ def build_trainer(cfg, model, predict_fn, ts, device, max_epochs,
     config has to say which.
     """
     t = cfg["training"]
-    loop = t.get("loop", "train_v34" if cfg["model"]["kind"] == "cod"
+    # `cod_no_baseline` defaults to the same loop as `cod`, not to the baseline
+    # loop. Ablation A is COD's architecture with H replaced by x0, and O-12 is
+    # only a one-variable test if the training pipeline is also identical — a
+    # different trainer would change two things at once, which is exactly the
+    # defect that makes the monolithic checkpoints unusable as a substitute (N-9).
+    loop = t.get("loop", "train_v34" if cfg["model"]["kind"].startswith("cod")
                  else "train_physics")
     cw = t.get("causal_weighting", {})
     kwargs = dict(

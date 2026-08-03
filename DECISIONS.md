@@ -288,8 +288,35 @@ Phát biểu phạm vi: khoảng cách đáng kể với máy đấu nối tái 
 động; máy chạy nền phẳng gần như không có khoảng cách nào để khai thác (N-4).
 
 ### C-14. Phạm vi: benchmark mô tả một CHẾ ĐỘ VẬN HÀNH, không phải một đội máy
-Đóng O-10, 2026-08-03. Đây là lập luận, không phải khẳng định — chỗ yếu nhất
-được đánh dấu rõ ở §4 để phản đối được.
+Đóng O-10, 2026-08-03. **ĐÃ CHỐT 2026-08-03** — không còn là đề xuất.
+
+**Cách trình bày trong bài, đã chốt:**
+
+1. **Con số neo là DP 1,42 / C2H2 1,90** (ETTh1 ngày không phát ngược, K_amp
+   17,8%, biên độ hot-spot thực tế 12,38 °C). Không phải 1,70 / 2,59.
+2. **Phát biểu là về CHẾ ĐỘ VẬN HÀNH, không về đội máy.** Viết "với máy có chu kỳ
+   tải biên độ ~18% định mức, khoảng cách là 1,42 trên DP", không viết "máy biến
+   áp phân phối điển hình có khoảng cách 1,42". n = 2 máy không đỡ được câu thứ
+   hai. Hai câu nghe giống nhau và chỉ một câu có bằng chứng.
+3. **Trình bày trên đường cong** (C-13), với cả ba chế độ được gắn nhãn:
+   - **ETTh2, 8,7%** → biên độ 6,64 °C, DP 1,113 / C2H2 1,232. Nhãn: **máy chạy
+     nền, nơi khoảng cách gần như biến mất**. Phải có mặt: nó là giới hạn thành
+     thật của phương pháp (N-4), và giấu nó đi thì reviewer sẽ tìm ra.
+   - **ETTh1 không phát ngược, 17,8%** → 12,38 °C, **DP 1,420 / C2H2 1,896**.
+     Nhãn: **điểm neo**. Feeder đo được duy nhất nằm trong dải sampler, tức điểm
+     duy nhất vừa có dữ liệu thật vừa có model đã train và test tại đó.
+   - **ETTh1 phát ngược, 29,7%** → 19,84 °C, DP 2,275 / C2H2 4,203. Nhãn:
+     **ngoại suy dọc đường cong đã kiểm chứng tại bốn điểm**, và **dựa trên
+     n = 1** — tập con ngày của một máy. Cả hai chữ này phải xuất hiện cùng con
+     số, không tách ra chú thích cuối trang.
+
+**Vì sao ngoại suy ở điểm ba là hợp lệ:** đường cong C-10 đã được kiểm tại bốn
+điểm trải 6,6 đến 19,8 °C, lệch 2-5% và luôn cùng chiều (nội suy tuyến tính của
+hàm lồi thì vượt lên). Đó là thứ cho phép **dẫn bài bằng đường cong** thay vì
+bằng một con số, và cho phép gọi chế độ phát ngược là ngoại suy dọc một đường
+cong đã kiểm chứng — chứ không phải là một phép đo.
+
+Lập luận đầy đủ và chỗ yếu nhất ở §4 bên dưới; giữ nguyên để phản đối được.
 
 **Số đo.** `26_prefix7_arm_and_ett_gap.py --gap-only`, N=400, seed 999, biên độ
 hot-spot đo bằng RK45, gap đo dọc quỹ đạo thật:
@@ -646,7 +673,26 @@ thấp hơn mức tham số này ngụ ý — nêu thẳng con số 2,39 và 5,6
 để đi hiệu chỉnh; nếu về sau có bộ dữ liệu máy chạy nóng kèm hot-spot đo được
 thì đó là bài khác.
 
-**O-12. Train CODNoBaseline (Ablation A) trên phân phối fix-7.** Phép thử một
+**O-12 — CODE ĐÃ SẴN SÀNG 2026-08-03, chờ train trên Colab.**
+`configs/matrix/cod_no_baseline.yaml`, hash phân phối `fc4cb76c3b32ec17`, đăng ký
+trong `run.py`, round-trip checkpoint đạt, smoke test qua `run.py` trên CPU đạt.
+Cùng ngân sách với ma trận (10.800 s đề xuất).
+
+**Một variable, đã kiểm chứ không giả định:** `CODNoBaseline` có **cùng số tham
+số (154.178) và cùng danh sách khoá state_dict** với `CODOperator`; chỉ
+`_ode_baseline` trả về `x0` thay vì nghiệm giải tích. Loop cũng phải giống —
+`build_trainer` trước đây mặc định `train_v34` chỉ khi `kind == "cod"`, nên
+Ablation A sẽ âm thầm nhận trainer khác; đã sửa thành `kind.startswith("cod")` và
+config ghi `loop: train_v34` tường minh.
+
+**Lỗi phải sửa trước đó, đáng ghi lại:** `CODNoBaseline._ode_baseline` mang chữ
+ký cũ `(self, x0, u, t)` từ trước fix 1, trong khi `forward` và
+`_thermal_predict_grid` đều gọi kèm `theta_ss_grid=`. **Mọi forward pass đều ném
+`TypeError`** — class này chưa từng chạy được lần nào. Chính docstring của nó ghi
+"not exercised by any verification gate", và đó là lý do lỗi tồn tại suốt từ khi
+fix 1 thêm tham số. O-12 lẽ ra không thể bắt đầu.
+
+**O-12 (nội dung gốc). Train CODNoBaseline (Ablation A) trên phân phối fix-7.** Phép thử một
 biến cho luận điểm N-8: COD thay baseline H bằng hằng số x0, giữ nguyên mạng và
 pipeline. Nếu nó làm trơn biên độ còn COD thì không, delta-learning trên nền
 giải tích có lý do chưa ai nêu là bảo toàn khoảng cách Jensen khỏi spectral

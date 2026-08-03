@@ -46,9 +46,9 @@ binds.
 
 ---
 
-## 1. Confirm the six cells still round-trip on this machine
+## 1. Confirm every architecture still round-trips on this machine
 
-Cheap, and it catches an environment difference before 40 runs depend on it. A
+Cheap, and it catches an environment difference before 35 runs depend on it. A
 cell that trains for three hours and then cannot reload its weights is the O-5
 failure repeated.
 
@@ -56,15 +56,17 @@ failure repeated.
 !python audit_port/scripts/25_checkpoint_roundtrip.py --max-epochs 15 --n-ic 24 --n-test 6
 ```
 
-Expect `6/6 architectures round-trip their checkpoints correctly` — seven
-configs including COD. Any `FAIL` line names the config that failed; fix before
-proceeding.
+Expect `8/8 architectures round-trip their checkpoints correctly` — COD plus the
+seven configs in `configs/matrix/`. Any `FAIL` line names the config that failed;
+fix before proceeding. One failing cell no longer aborts the rest, so the summary
+at the end is complete even when something breaks.
 
 ---
 
 ## 2. The matrix
 
-Six cells x 5 seeds = 30 runs at 3 h = 90 GPU-hours. C-11 assumes several Colab
+Six cells x 5 seeds = 30 runs, plus Ablation A x 5 = 35 runs, at 3 h =
+105 GPU-hours. C-11 assumes several Colab
 accounts writing into one Drive directory, so the order below is by *priority*,
 not by dependency — any account can take any line.
 
@@ -75,7 +77,8 @@ clobber.
 ```bash
 for CFG in fno_in_cascade fno_monolithic \
            mionet_in_cascade mionet_monolithic \
-           sdeeponet_in_cascade sdeeponet_monolithic; do
+           sdeeponet_in_cascade sdeeponet_monolithic \
+           cod_no_baseline; do
   for SEED in 1 2 3 4 5; do
     python scripts/run.py --config configs/matrix/$CFG.yaml \
         --freeze-hash fc4cb76c3b32ec17 \
@@ -96,6 +99,11 @@ one cell.
 2. `mionet_in_cascade` + `mionet_monolithic` — cheapest, so highest runs per hour.
 3. `sdeeponet_in_cascade` + `sdeeponet_monolithic` — carries the largest
    adaptation (PORT_LOG J-90), so its result needs the most careful reading.
+4. `cod_no_baseline` — DECISIONS O-12, Ablation A. Not part of the six-cell
+   matrix and not paired with anything: its comparison is against **COD itself**
+   on the same seeds. One seed is enough to be informative, five to be
+   reportable. It uses `loop: train_v34`, COD's own trainer, because a different
+   trainer would be a second variable.
 
 **After each run, check three things before moving on:**
 
