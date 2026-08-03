@@ -294,6 +294,32 @@ sai số nhiệt rollout thật — thứ O-9 còn để mở và là thứ quy�
 ### O-7. Thiết kế thí nghiệm rollout
 Reference bằng LSODA chạy liên tục toàn chân trời, không chia cửa sổ. Đo sai số theo số cửa sổ đã roll. Tách bias hệ thống khỏi sai số ngẫu nhiên. Chỉ số cuối: sai số thời điểm end-of-life theo tháng. Thử cả cửa sổ 12h và 24h.
 
+**Tiến độ 2026-08-03: ba trong năm yêu cầu đã xong, hai còn lại.**
+`audit_port/scripts/24_rollout_thermal_error.py`, báo cáo ở
+`audit_port/ROLLOUT_THERMAL_ERROR.md`.
+
+Đã xong:
+- **Reference chạy liên tục toàn chân trời.** `reference_rollout` mang trạng thái
+  qua từng cửa sổ không reset, cùng `window_forcing` và cùng cầu phương DP
+  `_advance_dp` với model, nên hiệu số là sai số model chứ không phải sai khác
+  thiết lập. **Lệch khỏi mô tả gốc: dùng RK45 (`rtol=1e-9`) chứ không phải
+  LSODA.** Lý do: RK45 trên `fast_rhs_np` là tham chiếu mà mọi chỉ số khác trong
+  repo đang chấm theo, nên đổi sang LSODA ở riêng chỗ này sẽ đưa vào một khác
+  biệt integrator ngay tại phép đo lẽ ra chỉ đo model. LSODA thuộc về mục chuẩn
+  tốc độ ở tầng 0 của C-11, không thuộc về đây.
+- **Sai số theo số cửa sổ đã roll.** §3 của báo cáo, chia bốn phần chân trời.
+- **Tách bias hệ thống khỏi ngẫu nhiên.** Ba rollout trên cùng forcing:
+  reference, tự chạy (mang trạng thái của chính nó), và teacher-forced (reset về
+  trạng thái reference mỗi cửa sổ). `free − teacher` chính là phần tích lũy.
+
+Chưa xong:
+- **Sai số end-of-life theo tháng.** Cột EOL vẫn `censored` ở chân trời một năm.
+  K=1,10 tới DP 273 sau một năm nên chỉ cần khoảng 1100 cửa sổ là chạm EOL, tức
+  đo được; các tải thấp hơn còn hàng chục năm. Chi phí đo được: ~3,2 s mỗi
+  cửa-sổ-kịch-bản, và burn-in bão hòa ở 730 vì forcing mùa lặp theo năm nên năm
+  thứ hai trở đi chỉ còn ~0,4 s.
+- **Cửa sổ 24h.** Chưa thử, mới chỉ 12h.
+
 ### O-8. Đo khoảng cách Jensen thực nghiệm
 Triển khai `cod/models/daily_mean.py` và đo tỷ số giữa tích phân trên quỹ đạo phân giải và đánh giá tại nhiệt độ trung bình, trên test set thật, đối chiếu với bảng giải tích ở C-10. Báo cáo kèm biên độ dao động hot-spot thực tế của từng case, vì khoảng cách phụ thuộc biên độ. Đóng khi có `audit_port/JENSEN_GAP.md`.
 
@@ -352,6 +378,46 @@ và `theta_bias` được chấm lại với tham chiếu là một phép tích 
 `fast_rhs_np` trên cùng cửa sổ từ cùng IC. Chưa sửa `rollout.py` ở đây: O-9 yêu
 cầu chẩn đoán, và sửa thước đo trong cùng commit giải thích tại sao nó sai sẽ
 gộp before và after vào một diff.
+
+**ĐÓNG 2026-08-03.** Điều kiện đã nêu đã đủ: có model retrain (O-5,
+`artifacts/o5/model.pt`, hash phân phối `fc4cb76c3b32ec17`, hội tụ
+`converged_plateau`), và `theta_bias` được chấm lại với tham chiếu là tích phân
+`fast_rhs_np` liên tục trên cùng forcing từ cùng IC. 730 cửa sổ mỗi kịch bản,
+`audit_port/ROLLOUT_THERMAL_ERROR.md`.
+
+| K_base | bias °C | sd | một cửa sổ | tích lũy |
+|---|---|---|---|---|
+| 0,85 | **−0,5622** | 0,077 | −0,5578 | −0,0044 |
+| 0,95 | **−0,5526** | 0,070 | −0,5479 | −0,0047 |
+| 1,00 | **−0,5224** | 0,068 | −0,5179 | −0,0045 |
+| 1,10 | **−0,4129** | 0,067 | −0,4093 | −0,0036 |
+
+Ba kết luận:
+
+1. **Sai số nhiệt thật là khoảng −0,5 °C, và là sai số model thật.** Cùng thước
+   đo cho `ExactModel` −0,002 °C và thu lại đúng +0,5000 khi bơm vào +0,5 °C, nên
+   đây không phải artifact của thước đo nữa.
+2. **Tính đơn điệu theo tải biến mất.** Thước đo cũ cho −2,86 → −3,88 tăng đều
+   theo K, và mục này dùng chính tính đơn điệu đó để bác lời giải thích bậc thang
+   ETC của bản thảo. Với thước đo đã sửa, bias **phẳng và hơi giảm** theo tải:
+   −0,56, −0,55, −0,52, −0,41. Toàn bộ xu hướng theo tải là artifact của độ trễ
+   pha, nay xác nhận trên model đã hội tụ chứ không chỉ trên `ExactModel`.
+3. **Không tích lũy.** Phần tích lũy là −0,004 °C ở mọi tải, tức 0,8% của tổng.
+   Qua 730 cửa sổ tự nạp lại đầu ra của chính mình, model cộng thêm 4 mK. Gần như
+   toàn bộ sai số là sai số một cửa sổ. §3 cho thấy không tăng theo chân trời.
+
+**Hệ quả lão hóa, và đây là phần phải nói thẳng.** Bias lạnh nên model đọc DP
+**cao hơn** sự thật ở mọi tải: +0,15%, +0,65%, +1,23%, +2,17% sau một năm. Tức
+máy trông khỏe hơn thực tế — chiều sai **không an toàn** cho một tuyên bố quản lý
+tài sản. Sai số tốc độ lão hóa suy ra là **−4,5% đến −6,1%**, một dấu, ổn định
+theo tải.
+
+Còn để mở, chuyển sang O-7: **con số end-of-life vẫn chưa đo được**, cột EOL là
+`censored` ở chân trời một năm. Cái đã có là một chặn: bias một dấu, không tích
+lũy, −5% tốc độ lão hóa. Điều đó **không** đủ để công bố một con số EOL, chỉ đủ
+để nói bias đã được đặc trưng hóa. Không đặt ngưỡng chấp nhận trong script: chưa
+mục nào trong DECISIONS quyết định ngưỡng bias rollout chấp nhận được, và tự chế
+ra một ngưỡng ở đây là lặp lại đúng động tác của hệ số 0,850.
 
 **O-10. Hiệu chuẩn phân phối tải theo ETT.** Đo xong 2026-07-28,
 `audit_port/ETT_LOAD_CALIBRATION.md`. **Chưa đóng**: kết quả là một quyết định
