@@ -548,6 +548,12 @@ def main() -> int:
     print(f"[run] wrote {out_dir / 'predictions.npz'} "
           f"({pred.shape[0]} cases x {pred.shape[1]} times x {pred.shape[2]} states)")
 
+    # Figures last. Every input they need is already on disk by this point, so a
+    # plotting failure reports itself and cannot destroy a finished training run.
+    from figures import write_run_figures
+    figs = write_run_figures(out_dir)
+    print(f"[fig] wrote {len(figs)} file(s) to {out_dir / 'figures'}")
+
     if not outcome.converged:
         print("[run] This run did NOT converge. Report it as non-converged, "
               f"with stop_reason={outcome.stop_reason!r} and its learning curve. "

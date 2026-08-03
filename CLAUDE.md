@@ -51,6 +51,37 @@ thứ bắt được nó.
 Hệ quả kèm theo: script kiểm chứng phải **fail được**. Đặt ngưỡng và trả exit
 code khác 0, đừng chỉ in số ra rồi tự đọc.
 
+## Quy ước hình vẽ
+
+Mọi hình trong repo theo đúng bộ quy ước này. Cài đặt nằm ở `scripts/figures.py`
+(`RC`, `FORMATS`); hình viết ở chỗ khác phải khớp.
+
+- **Font serif.** `font.family: serif`, mathtext `dejavuserif`.
+- **Xuất cả PDF và SVG**, cùng tên, vào thư mục con `figures/` của thư mục kết
+  quả của lần chạy.
+- **Không có suptitle.** Thông tin toàn hình đặt ở nhãn trục hoặc annotation góc.
+- **Có title cho từng subplot.** Đây là chỗ ghi đại lượng và đơn vị.
+- Lưới mờ (`alpha 0.3`), `bbox_inches="tight"`, dpi 150.
+
+Code vẽ hình **không nằm trong package** `cod/`. Đây là quy tắc cũ đã ghi ở
+`cod/eval/rollout.py`: rollout trả về dữ liệu, việc vẽ tách ra ngoài. Hình nào
+cần một con số thì con số đó phải có sẵn trong `run.json`, `predictions.npz` hoặc
+`clamp_history.json` trước — hàm vẽ không được tự tính.
+
+**Cái gì không dựng lại được từ `predictions.npz`** thì phải lưu riêng, vì
+`predictions.npz` chỉ chứa phần đánh giá (`pred`, `gt`, `t_eval`, `x0`, sensors,
+`kind`, `family`). Toàn bộ phần *huấn luyện* không nằm trong đó:
+
+- đường loss huấn luyện → `loss_history.json`
+- đường validation, thứ mà tiêu chí plateau thực sự quyết định trên đó →
+  `run.json` (`outcome.val_history`)
+- quỹ đạo clamp và quỹ đạo causal weight, trả lời câu "nó kích hoạt lúc nào" mà
+  không thống kê tóm tắt nào trả lời được (J-85, J-89) → `clamp_history.json`
+
+Còn một chuỗi **chưa** lưu, ghi ra đây để nó là lỗ hổng đã biết chứ không phải
+lỗ hổng im lặng: chuẩn gradient theo epoch (`PathologyReport` chỉ giữ
+`grad_norm_final`).
+
 ## Bối cảnh
 
 Bản thảo bị JCP desk-reject vì originality. Audit tìm ra 6 vấn đề blocking:

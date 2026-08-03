@@ -187,6 +187,52 @@ class _SDeepONetBase(nn.Module):
         x0_b = x0n.unsqueeze(1).expand(-1, ns, STATE_DIM_FAST)
         return torch.cat([K, Ta, x0_b], dim=-1)
 
+    def _branch_dedup(self, x0n, u_sensors):
+        """Run the recurrent branch once per distinct case, not once per row.
+
+        The branch encodes `(x0, K, theta_a)` and does **not** depend on the query
+        time. `ode_physics_loss_shared` evaluates the model at `n_col` collocation
+        points by
+
+            x0e = x0.unsqueeze(1).expand(B, n_col, n).reshape(B * n_col, n)
+
+        so every case appears `n_col` times in contiguous rows. Recomputing a
+        4-layer GRU over a 100-step sequence for each of those is pure waste — the
+        same waste the rollout's shared `cyc_cache` removed, and for the same
+        reason: the quantity does not depend on what varies across the repeats.
+        Measured, it is what exhausted CPU memory at the config's
+        `batch_size = 64, n_collocation = 60`, where activations scale as
+        `B * n_col * n_sensors * 256`.
+
+        Shrinking the batch was the alternative and is worse: at equal wall clock
+        a smaller batch is a *different optimisation problem*, which would then
+        need defending in the paper. This is exact instead of a compromise.
+
+        Exactness. Runs are detected on `(x0, u)` — 206 numbers per row, trivial
+        against the GRU — and a row starts a new group only when it differs from
+        its predecessor, so the grouping is correct for any input where identical
+        rows are contiguous, and degrades to computing every row when they are
+        not. No approximation and no assumption about `n_col`.
+
+        Not applicable to FNO, which carries batch normalisation: there the batch
+        composition changes the output, so deduplicating rows would change the
+        answer rather than save work. S-DeepONet has no normalisation layer.
+        """
+        key = torch.cat([x0n, u_sensors], dim=-1)
+        if key.shape[0] > 1:
+            diff = (key[1:] != key[:-1]).any(dim=-1)
+            starts = torch.cat([
+                torch.zeros(1, dtype=torch.long, device=key.device),
+                torch.nonzero(diff, as_tuple=False).squeeze(-1) + 1])
+            if starts.numel() < key.shape[0]:
+                gid = torch.cumsum(
+                    torch.cat([torch.zeros(1, dtype=torch.long,
+                                           device=key.device), diff.long()]), 0)
+                b_unique = self.branch(
+                    self._sequence(x0n[starts], u_sensors[starts]))
+                return b_unique[gid]
+        return self.branch(self._sequence(x0n, u_sensors))
+
     def n_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
@@ -205,7 +251,7 @@ class SDeepONetMonolithic(_SDeepONetBase):
         self.bias = nn.Parameter(torch.zeros(STATE_DIM_FAST))
 
     def _raw(self, x0n, u_sensors, t):
-        b = self.branch(self._sequence(x0n, u_sensors))              # (B, hd)
+        b = self._branch_dedup(x0n, u_sensors)                       # (B, hd)
         # Trunk input is t/T. The paper's trunk takes nodal coordinates; ours
         # takes the query time, normalised to the unit interval.
         f = self.trunk(t / self.T).view(-1, self.hd, STATE_DIM_FAST)
@@ -238,7 +284,7 @@ class SDeepONetInCascade(_SDeepONetBase):
     def forward(self, x0, u_sensors, t, theta_ss_grid=None):
         x0n = self._norm(x0)
         x0_TO, x0_gas = x0[:, 0:1], x0[:, 1:]
-        b = self.branch(self._sequence(x0n, u_sensors))               # (B, hd)
+        b = self._branch_dedup(x0n, u_sensors)                        # (B, hd)
 
         f_q = self.trunk(t / self.T)                                  # (B, hd)
         raw_q = (b * f_q).sum(dim=-1, keepdim=True) + self.bias

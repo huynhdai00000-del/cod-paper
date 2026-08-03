@@ -49,18 +49,27 @@ from cod.data.physics import STATE_DIM_FAST, TW  # noqa: E402
 from cod.data.realistic import RealisticParams  # noqa: E402
 from cod.data.steady_state import formula_A, true_fixed_point_np  # noqa: E402
 from cod.eval.metrics import TRANSFORMER_STATES, evaluate_state  # noqa: E402
-from cod.models.cod import CODOperator, cod_predict  # noqa: E402
+sys.path.insert(0, str(ROOT / "scripts"))  # noqa: E402
+from run import build_model  # noqa: E402
 
 CONFIG = ROOT / "configs" / "example_cod_seed1.yaml"
+MATRIX_DIR = ROOT / "configs" / "matrix"
 OUTROOT = ROOT / "results"
 TAG = "roundtrip"
 TOL = 1e-6          # relative; the two sides should be bit-identical
 
+#: Every architecture that can be trained, not just COD. The original version of
+#: this script checked `cod` alone, which would have left five C-11 cells free to
+#: train for an hour on Colab and discard their weights — the O-5 failure repeated
+#: five more times. A save path is verified per architecture or it is not verified.
+ALL_CONFIGS = [CONFIG] + sorted(MATRIX_DIR.glob("*.yaml"))
 
-def train_subprocess(max_epochs: int, n_ic: int, n_test: int) -> Path:
+
+def train_subprocess(cfg_path: Path, max_epochs: int, n_ic: int,
+                     n_test: int) -> Path:
     """Run a real training job in its own process and return its output dir."""
     cmd = [sys.executable, str(ROOT / "scripts" / "run.py"),
-           "--config", str(CONFIG), "--max-epochs", str(max_epochs),
+           "--config", str(cfg_path), "--max-epochs", str(max_epochs),
            "--n-ic", str(n_ic), "--n-test", str(n_test),
            "--device", "cpu", "--tag", TAG, "--out", str(OUTROOT), "--overwrite"]
     print("[sub] " + " ".join(cmd[1:]))
@@ -101,19 +110,13 @@ def score_from_checkpoint(ckpt_path: Path, cfg, n_test: int, guard: float):
         if key not in ck:
             raise SystemExit(f"[FAIL] checkpoint is missing {key!r}")
 
-    model = CODOperator(
-        state_dim=STATE_DIM_FAST, n_sensors=int(cfg["distribution"]["n_sensors"]),
-        d_h=int(cfg["model"]["branch"]["width"]),
-        p=int(cfg["model"]["basis_dim"]),
-        n_layers=int(cfg["model"]["branch"]["layers"]),
-        n_exp_feats=int(cfg["model"].get("n_exp_feats", 12)),
-        T=float(cfg["distribution"]["window_minutes"]),
-        # Placeholders: `x_mean_TO` / `x_std_TO` are buffers, so a strict load
-        # overwrites them. If they were NOT in the file, strict=True fails here —
-        # which is the check, not an inconvenience.
-        x_mean=np.zeros(6), x_std=np.ones(6),
-        theta_ss_mode=ck["theta_ss_mode"],
-    ).to(device)
+    # Built through run.py's own builder so this checks the real construction
+    # path per architecture rather than a COD-shaped reimplementation of it.
+    # Placeholder normalisation: the buffers come back with the strict load,
+    # and if they were NOT in the file strict=True fails here, which is the
+    # check rather than an inconvenience.
+    model, predict_fn = build_model(cfg, np.zeros(6), np.ones(6), device)
+    model = model.to(device)
     model.load_state_dict(ck["model_state_dict"], strict=True)
     model.eval()
 
@@ -134,18 +137,20 @@ def score_from_checkpoint(ckpt_path: Path, cfg, n_test: int, guard: float):
             s_k = torch.tensor(np.concatenate([c.K_sensors, c.Ta_sensors]),
                                dtype=torch.float32).unsqueeze(0)
             x0_t = torch.tensor(c.x0, dtype=torch.float32).unsqueeze(0)
-            preds.append(cod_predict(model, x0_t.expand(50, -1).contiguous(),
-                                     s_k.expand(50, -1).contiguous(),
-                                     t_q).numpy())
+            preds.append(predict_fn(model, x0_t.expand(50, -1).contiguous(),
+                                    s_k.expand(50, -1).contiguous(),
+                                    t_q).numpy())
     pred = np.stack(preds)
     return {spec.name: evaluate_state(pred[:, :, i], gt[:, :, i], spec).to_dict()
             for i, spec in enumerate(TRANSFORMER_STATES[:STATE_DIM_FAST])}, ck
 
 
-def main() -> int:
-    cfg = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    n_test = 12
-    out_dir = train_subprocess(max_epochs=100, n_ic=50, n_test=n_test)
+def check_one(cfg_path: Path, max_epochs: int, n_ic: int, n_test: int) -> int:
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    print(f"\n{'=' * 72}\n### {cfg_path.name}  (kind = {cfg['model']['kind']})\n"
+          f"{'=' * 72}")
+    out_dir = train_subprocess(cfg_path, max_epochs=max_epochs, n_ic=n_ic,
+                               n_test=n_test)
 
     ckpt = out_dir / "model.pt"
     print(f"\n=== 1. does the file exist ===")
@@ -203,13 +208,54 @@ def main() -> int:
         print(f"  {spec.name:>10} mae {a:14.8g} vs {m.mae:14.8g}  rel {rel:.2e}")
 
     if bad:
-        print("\nFAIL — the reloaded model is not the model that was scored:")
+        print(f"\nFAIL ({cfg_path.name}) — the reloaded model is not the model "
+              "that was scored:")
         for b in bad:
             print(f"  {b}")
         return 1
-    print(f"\nPASS — every metric reproduced from the reloaded weights "
-          f"within {TOL:g} relative, and predictions.npz reproduces them too.")
+    print(f"\nPASS ({cfg_path.name}) — every metric reproduced from the reloaded "
+          f"weights within {TOL:g} relative, and predictions.npz reproduces them.")
     return 0
+
+
+def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--configs", nargs="+", type=Path, default=None,
+                    help="Configs to check. Default: COD plus every C-11 matrix "
+                         "cell, because a save path verified for one "
+                         "architecture is not verified for the others.")
+    ap.add_argument("--max-epochs", type=int, default=40)
+    ap.add_argument("--n-ic", type=int, default=32)
+    ap.add_argument("--n-test", type=int, default=8)
+    args = ap.parse_args()
+
+    configs = args.configs if args.configs else ALL_CONFIGS
+    print(f"[plan] {len(configs)} architecture(s) to round-trip: "
+          + ", ".join(c.stem for c in configs))
+
+    results = {}
+    for cfg_path in configs:
+        # One architecture failing must not abort the others: the point is to
+        # learn which save paths work, and stopping at the first failure hides
+        # every cell after it.
+        try:
+            results[cfg_path.name] = check_one(cfg_path, args.max_epochs,
+                                               args.n_ic, args.n_test)
+        except SystemExit as exc:
+            print(f"[FAIL] {cfg_path.name}: {exc}")
+            results[cfg_path.name] = 1
+        except Exception as exc:                      # noqa: BLE001
+            print(f"[FAIL] {cfg_path.name}: {type(exc).__name__}: {exc}")
+            results[cfg_path.name] = 1
+
+    print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
+    for name, rc in results.items():
+        print(f"  [{'PASS' if rc == 0 else 'FAIL'}] {name}")
+    n_fail = sum(1 for rc in results.values() if rc)
+    print(f"\n{len(results) - n_fail}/{len(results)} architectures round-trip "
+          "their checkpoints correctly.")
+    return 1 if n_fail else 0
 
 
 if __name__ == "__main__":

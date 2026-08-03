@@ -188,7 +188,49 @@ phải báo cáo. Trích Lu et al. 2022 (CMAME 393:114778, 16 benchmark, FAIR) l
 khung. Model không hội tụ báo cáo là không hội tụ kèm learning curve, không
 quy thành con số hiệu năng.
 
-**Ngân sách wall-clock của ma trận là quyết định RIÊNG, chưa lấy (2026-07-30).**
+**Ngân sách wall-clock: ĐỀ XUẤT 10.800 s (3 giờ), chờ chốt (2026-08-03).**
+C-11 nói cách lấy số là "đặt ở mức COD hội tụ thoải mái, rồi áp đúng con số đó
+cho mọi kiến trúc". Nay đã có dữ liệu để làm điều đó.
+
+**Dữ liệu.** O-5 (`artifacts/o5/run.json`, Tesla T4): hội tụ `converged_plateau`
+ở **11.900 epoch / 4.911 s**, tức 0,4127 s/epoch, dưới trần 7.200 s và bỏ không
+32%. Tiêu chí cần 20 × 100 = **2.000 epoch cao nguyên** để tuyên bố hội tụ, nên
+phần "học thật" là khoảng 9.900 epoch.
+
+**Đề xuất 10.800 s**: 2,2 lần thời gian COD thực sự cần, đủ biên cho biến động
+giữa 5 seed; tròn theo giờ nên khớp giới hạn phiên Colab; không rộng đến mức lãng
+phí trên 40 lần chạy.
+
+**Hệ quả cho các ô đắt hơn mỗi bước.** Đo tương đối trên CPU, cùng batch và cùng
+số điểm collocation. GPU sẽ khác vì FFT và GRU song song hoá khác nhau — đây là
+số để **xếp hạng**, không phải để ngoại suy:
+
+| ô | tham số | s/bước tương đối | epoch ước tính ở 10.800 s |
+|---|---|---|---|
+| COD | 154.178 | 1,00 | ~26.000 (chạm trần epoch) |
+| `fno_in_cascade` | 550.535 | **1,91** | **~14.100** |
+| `fno_monolithic` | 551.180 | 1,79 | ~15.000 |
+| `mionet_in_cascade` | 363.807 | 0,16 | chạm trần epoch |
+| `mionet_monolithic` | 564.812 | 0,33 | chạm trần epoch |
+| `sdeeponet_in_cascade` | 798.996 | 1,17 | ~22.000 |
+| `sdeeponet_monolithic` | 849.501 | 1,25 | ~21.000 |
+
+**FNO là ô rủi ro nhất, phải kiểm trước.** Ở 10.800 s nó chỉ được ~14.000 epoch
+so với 11.900 mà COD cần. Nếu FNO cần nhiều epoch hơn COD — hoàn toàn có thể vì
+kiến trúc khác — ngân sách sẽ chặn nó, và một baseline bị ngân sách chặn không
+nói gì về kiến trúc.
+
+**Do đó: chạy thử MỘT seed FNO trước khi cam kết cả ma trận.** 3 giờ để biết
+`stop_reason` là `converged_plateau` hay `wall_clock_budget`. Nếu là cái thứ hai,
+nâng ngân sách rồi chạy lại từ đầu — bỏ 3 giờ để khỏi vứt 120 giờ.
+
+MIONet rẻ tới mức chạm **trần epoch 25.000** trước khi hết giờ. Không phải lỗi:
+báo `stop_reason = epoch_budget` và ghi rõ nó **không** bị ngân sách thời gian
+chặn. Không nâng riêng trần epoch cho MIONet — làm thế là cho một kiến trúc nhiều
+bước hơn kiến trúc khác, đúng thứ mà giao thức wall-clock loại bỏ.
+
+**Ghi chú lịch sử (2026-07-30):** trước khi có số trên, mục này ghi rằng ngân
+sách là quyết định riêng chưa lấy.
 `example_cod_seed1.yaml` để `max_wall_seconds: 7200`, và con số đó **không phải**
 ngân sách ma trận. O-5 không phải phép so sánh: nó hỏi fix 1-9 có làm hỏng gì
 không, mà model không hội tụ thì không trả lời được câu đó — sẽ lẫn "fix vật lý
