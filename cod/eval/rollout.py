@@ -295,7 +295,8 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
                          n_eval: int = 20, T: float = TW,
                          dp_source: str = "model", steady_state=None,
                          device=None, max_windows: int | None = None,
-                         teacher_states: np.ndarray | None = None
+                         teacher_states: np.ndarray | None = None,
+                         cyc_cache: dict | None = None
                          ) -> RolloutResult:
     """Roll the model forward window by window until DP reaches end of life.
 
@@ -320,6 +321,15 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
     a rollout error cannot be attributed and O-7's "separate systematic bias from
     random error" has nothing to work with. `None` leaves the free-running
     behaviour exactly as it was.
+
+    `cyc_cache` lets a caller share the cyclic-endpoint burn-ins across rollouts.
+    The cyclic endpoint is a property of the **forcing**, not of the model, so
+    scoring a free-running and a teacher-forced rollout over the same scenario
+    recomputes an identical set of burn-ins twice when each builds its own cache.
+    That is the dominant cost of a long rollout: each entry is several RK45 cycles
+    and, over a year, every window has a distinct seasonal `(K_w, Ta_w)`. Passing
+    one dict across both halves of the comparison halves it. `None` keeps the
+    previous self-contained behaviour.
     """
     if steady_state is None:
         steady_state = true_fixed_point_np
@@ -344,7 +354,8 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
     DP_cur = DP0
 
     chi_l, dp_l, yr_l, th_l, ss_l, cy_l, pts_l = [], [], [], [], [], [], []
-    cyc_cache: dict[tuple[float, float], float] = {}
+    if cyc_cache is None:
+        cyc_cache = {}
     reached_eol = False
 
     for w in range(max_windows):

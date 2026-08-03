@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -162,9 +163,14 @@ def run_scenario(model, K_base, max_windows, device):
                             steady_state=true_fixed_point_np)
     n = len(ref.years)
 
+    # One cache across both model rollouts. The cyclic endpoint depends only on
+    # the forcing, so recomputing it for the teacher pass is pure waste — and it
+    # is the dominant cost, several RK45 cycles per distinct (K_w, Ta_w).
+    cyc_cache: dict = {}
     free = chi_lifetime_rollout(model, K_base, dp_source="model",
                                 steady_state=true_fixed_point_np,
-                                max_windows=n, device=device)
+                                max_windows=n, device=device,
+                                cyc_cache=cyc_cache)
 
     # The reference state at the START of each window is the previous window's
     # end state. Window 0 starts from the shared initial condition, so the teacher
@@ -180,7 +186,8 @@ def run_scenario(model, K_base, max_windows, device):
     teach = chi_lifetime_rollout(model, K_base, dp_source="model",
                                  steady_state=true_fixed_point_np,
                                  max_windows=n, device=device,
-                                 teacher_states=teacher_states)
+                                 teacher_states=teacher_states,
+                                 cyc_cache=cyc_cache)
     return ref, free, teach
 
 
@@ -201,8 +208,32 @@ def main() -> int:
                          "reported bias has the right sign and size.")
     ap.add_argument("--max-windows", type=int, default=400,
                     help="Windows per scenario. 730 = one year.")
+    ap.add_argument("--k-scenarios", type=float, nargs="+", default=None,
+                    help="Load scenarios to run. Measured cost is ~3.2 s per "
+                         "scenario-window, so a full year over all four is "
+                         "~2.6 h — long enough to be killed as one job. Run "
+                         "them separately and combine with --render-from.")
+    ap.add_argument("--json-out", type=Path, default=None,
+                    help="Write this run's scenario rows here instead of "
+                         "rendering a partial report.")
+    ap.add_argument("--render-from", type=Path, nargs="+", default=None,
+                    help="Render the report from previously written JSON rows. "
+                         "Combining must not require re-running the rollouts.")
     ap.add_argument("--device", default="cpu")
     args = ap.parse_args()
+
+    if args.render_from:
+        rows = []
+        for p in args.render_from:
+            rows.extend(json.loads(p.read_text(encoding="utf-8"))["rows"])
+        rows.sort(key=lambda r: r["K"])
+        for r in rows:            # arrays do not survive JSON; rebuild
+            r["e_free"] = np.asarray(r["e_free"], float)
+            r["e_teach"] = np.asarray(r["e_teach"], float)
+        print(f"[render] {len(rows)} scenario(s) from "
+              f"{len(args.render_from)} file(s), no rollout")
+        return _render(rows, args, label=rows[0].get("label", "COD"),
+                       failures=[])
     if not args.checkpoint and not args.exact:
         ap.error("give --checkpoint, or --exact for the self-test")
 
@@ -221,9 +252,11 @@ def main() -> int:
                   "describes a non-converged model.")
 
     rows = []
+    scenarios = args.k_scenarios if args.k_scenarios else list(K_SCENARIOS)
     print(f"[roll] {label}, {args.max_windows} windows per scenario "
-          f"({args.max_windows * TW / 1440 / 365:.2f} yr)")
-    for K in K_SCENARIOS:
+          f"({args.max_windows * TW / 1440 / 365:.2f} yr), "
+          f"K = {scenarios}")
+    for K in scenarios:
         ref, free, teach = run_scenario(model, K, args.max_windows, device)
         e_free = free.theta_TO_end - ref.theta_TO_end
         e_teach = teach.theta_TO_end - ref.theta_TO_end
@@ -238,7 +271,7 @@ def main() -> int:
             "eol_ref": eol_months(ref.dp, ref.years, ref.reached_eol),
             "eol_free": eol_months(free.dp, free.years, free.reached_eol),
             "dp_rel": float(free.dp[-1] / ref.dp[-1] - 1.0),
-            "years": ref.years,
+            "years": ref.years, "label": label,
         })
         r = rows[-1]
         print(f"  K={K:.2f}  bias {r['bias_free']:+7.4f} degC  sd "
@@ -267,12 +300,30 @@ def main() -> int:
                     f"K={r['K']:.2f}: ExactModel moved EOL by "
                     f"{r['eol_free'] - r['eol_ref']:+.2f} months.")
 
+    if args.json_out:
+        # Rows only, so scenarios run as separate jobs can be combined later
+        # without re-running any rollout. Measured cost is ~3.2 s per
+        # scenario-window; a year over four scenarios does not fit in one job.
+        args.json_out.write_text(json.dumps({"rows": [
+            {k: (v.tolist() if isinstance(v, np.ndarray) else v)
+             for k, v in r.items()} for r in rows]}), encoding="utf-8")
+        print(f"[json] wrote {args.json_out} ({len(rows)} scenario(s))")
+        return 1 if failures else 0
+
+    return _render(rows, args, label, failures)
+
+
+def _render(rows, args, label, failures) -> int:
+    # Taken from the rows, not from `args`: in --render-from mode the horizon
+    # belongs to the runs being combined, and `n_win` would be
+    # whatever default this invocation happened to carry.
+    n_win = max(r["n"] for r in rows) if rows else 0
     # ── Report ─────────────────────────────────────────────────────────────
     md: list[str] = []
     A = md.append
     A("# Thermal error through a lifetime rollout\n")
-    A(f"Model: **{label}**. {args.max_windows} windows per scenario "
-      f"({args.max_windows * TW / 1440 / 365:.2f} yr at a {TW:g} min window). "
+    A(f"Model: **{label}**. {n_win} windows per scenario "
+      f"({n_win * TW / 1440 / 365:.2f} yr at a {TW:g} min window). "
       "Generated by `audit_port/scripts/24_rollout_thermal_error.py`.\n")
     A("This is the measurement DECISIONS O-9 left open. O-9 showed the "
       "manuscript's -3 degC rollout bias was an artifact of the metric — "
@@ -348,8 +399,8 @@ def main() -> int:
           f"{100 * r['dp_rel']:+.3f}% | {PCT_PER_K * r['bias_free']:+.2f}% | "
           f"{cell_ref} | {cell_free} | {cell_gap} |")
     A("")
-    A(f"Horizon is {args.max_windows} windows "
-      f"({args.max_windows * TW / 1440 / 365:.2f} yr) and DP starts at {DP0:g} "
+    A(f"Horizon is {n_win} windows "
+      f"({n_win * TW / 1440 / 365:.2f} yr) and DP starts at {DP0:g} "
       f"against an EOL of {DP_EOL:g}, so reaching EOL requires a much longer run "
       "than the default. Pass `--max-windows` large enough for the EOL columns to "
       "populate before quoting an EOL figure.\n")
