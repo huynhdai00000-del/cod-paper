@@ -136,6 +136,15 @@ def load_checkpoint(path: Path, device):
     return model, ck
 
 
+#: `chi_lifetime_rollout` stops at `DP <= DP_EOL + 1.0`, so a rollout can halt
+#: just short of DP_EOL itself -- 200.91 in the K=1.10 reference. EOL is therefore
+#: read at this threshold, matching the stopping rule. One DP unit out of the 800
+#: consumed is under 0.13% of life and far inside the model error being measured;
+#: what is not acceptable is the two rules disagreeing, which is what reported an
+#: end of life of 0.0 months.
+DP_EOL_REPORT = DP_EOL + 1.0
+
+
 def eol_months(dp: np.ndarray, years: np.ndarray, reached: bool) -> float | None:
     """End of life in months, linearly interpolated in 1/DP.
 
@@ -143,14 +152,20 @@ def eol_months(dp: np.ndarray, years: np.ndarray, reached: bool) -> float | None
     reciprocal is the interpolation the physics implies rather than a convenience.
     Returns None if the horizon ended before EOL — a censored rollout is reported
     as censored, not as its last window.
+
+    The crossing is located explicitly rather than with `argmax`, which returns 0
+    on an all-False array and is therefore indistinguishable from "crossed at the
+    first window". That is not hypothetical: it reported EOL at month 0 for a
+    reference that ended at DP 200.91 against a target of 200.
     """
-    if not reached:
+    crossed = np.flatnonzero(dp <= DP_EOL_REPORT)
+    if not reached or crossed.size == 0:
         return None
-    inv = 1.0 / dp
-    target = 1.0 / DP_EOL
-    j = int(np.argmax(inv >= target))
+    j = int(crossed[0])
     if j == 0:
         return float(years[0] * 12.0)
+    inv = 1.0 / dp
+    target = 1.0 / DP_EOL_REPORT
     y0, y1 = years[j - 1], years[j]
     a, b = inv[j - 1], inv[j]
     f = 0.0 if b == a else (target - a) / (b - a)
@@ -167,9 +182,15 @@ def run_scenario(model, K_base, max_windows, device):
     # the forcing, so recomputing it for the teacher pass is pure waste — and it
     # is the dominant cost, several RK45 cycles per distinct (K_w, Ta_w).
     cyc_cache: dict = {}
+    # The model runs to `max_windows`, not to the reference's length. Truncating
+    # it at `n` would censor the model's own end of life whenever the reference
+    # reaches EOL first — which a cold-biased model guarantees, since it reads DP
+    # high and therefore reaches EOL later. The EOL gap would then be unmeasurable
+    # by construction rather than by horizon, and would report as `censored` in
+    # exactly the case it is most interesting.
     free = chi_lifetime_rollout(model, K_base, dp_source="model",
                                 steady_state=true_fixed_point_np,
-                                max_windows=n, device=device,
+                                max_windows=max_windows, device=device,
                                 cyc_cache=cyc_cache)
 
     # The reference state at the START of each window is the previous window's
@@ -258,8 +279,13 @@ def main() -> int:
           f"K = {scenarios}")
     for K in scenarios:
         ref, free, teach = run_scenario(model, K, args.max_windows, device)
-        e_free = free.theta_TO_end - ref.theta_TO_end
-        e_teach = teach.theta_TO_end - ref.theta_TO_end
+        # The model may outlive the reference now that it is not truncated to it,
+        # so the error series are compared over the horizon both cover. The EOL
+        # columns below deliberately use each rollout's own length instead.
+        m = min(len(ref.theta_TO_end), len(free.theta_TO_end),
+                len(teach.theta_TO_end))
+        e_free = free.theta_TO_end[:m] - ref.theta_TO_end[:m]
+        e_teach = teach.theta_TO_end[:m] - ref.theta_TO_end[:m]
         rows.append({
             "K": K, "n": len(ref.years),
             "ref_dp_end": float(ref.dp[-1]), "free_dp_end": float(free.dp[-1]),

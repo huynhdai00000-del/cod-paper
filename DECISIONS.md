@@ -380,12 +380,35 @@ Reference bằng LSODA chạy liên tục toàn chân trời, không chia cửa 
   reference, tự chạy (mang trạng thái của chính nó), và teacher-forced (reset về
   trạng thái reference mỗi cửa sổ). `free − teacher` chính là phần tích lũy.
 
+- **Sai số end-of-life theo tháng — ĐO ĐƯỢC 2026-08-03 tại K=1,10.** 1400 cửa sổ:
+
+  | | EOL (tháng) |
+  |---|---|
+  | tham chiếu | **16,81** |
+  | model | **16,98** |
+  | chênh | **+0,17 tháng**, tức 1,0% tuổi thọ tham chiếu |
+
+  Model dự đoán EOL **muộn hơn** sự thật, đúng chiều của bias lạnh: đọc DP cao
+  hơn nên tưởng máy còn khỏe. +0,17 tháng ≈ 5 ngày trên tuổi thọ 17 tháng.
+
+  Hai lỗi phải sửa trước khi con số này có nghĩa, cả hai đều tự gây ra:
+  1. `eol_months` dùng `np.argmax(inv >= target)`, mà `argmax` trên mảng toàn
+     False trả về 0 — không phân biệt được với "chạm ngay cửa sổ đầu". Cộng thêm
+     việc luật dừng (`DP <= DP_EOL + 1`) và định nghĩa EOL (`DP <= DP_EOL`) khác
+     nhau, nên tham chiếu dừng ở DP 200,91 và điều kiện không bao giờ đúng. Kết
+     quả báo ra là **EOL 0,0 tháng**. Đã sửa: tìm điểm cắt tường minh và đọc EOL
+     ở đúng ngưỡng mà rollout dừng.
+  2. `run_scenario` cắt rollout của model theo độ dài của tham chiếu. Model bias
+     lạnh thì luôn chạm EOL **muộn hơn**, nên EOL của model bị censor **do cấu
+     trúc chứ không do chân trời** — đúng vào trường hợp đáng quan tâm nhất. Đã
+     sửa: model chạy tới EOL của chính nó, chuỗi sai số so trên phần chân trời
+     chung.
+
 Chưa xong:
-- **Sai số end-of-life theo tháng.** Cột EOL vẫn `censored` ở chân trời một năm.
-  K=1,10 tới DP 273 sau một năm nên chỉ cần khoảng 1100 cửa sổ là chạm EOL, tức
-  đo được; các tải thấp hơn còn hàng chục năm. Chi phí đo được: ~3,2 s mỗi
-  cửa-sổ-kịch-bản, và burn-in bão hòa ở 730 vì forcing mùa lặp theo năm nên năm
-  thứ hai trở đi chỉ còn ~0,4 s.
+- **EOL ở tải thấp.** K=0,85/0,95/1,00 vẫn `censored`: sau một năm DP mới xuống
+  974/877/740 nên còn hàng chục năm. Chi phí đo được: ~3,2 s mỗi cửa-sổ-kịch-bản
+  ở năm đầu, và burn-in bão hòa ở 730 vì forcing mùa lặp theo năm nên năm thứ hai
+  trở đi chỉ còn ~0,4 s.
 - **Cửa sổ 24h.** Chưa thử, mới chỉ 12h.
 
 ### O-8. Đo khoảng cách Jensen thực nghiệm
