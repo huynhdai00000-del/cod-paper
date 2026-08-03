@@ -51,6 +51,7 @@ from cod.data.physics import (
 )
 from cod.data.steady_state import true_fixed_point_torch
 from cod.models.blocks import ModifiedMLP, build_trunk_feats
+from cod.models.cascade import gas_integral
 
 # Which analytic attractor the model is built on. "true_fixed_point" is the
 # Phase 2 fix-1 default; "formula_C" is what v57 used and is required to
@@ -324,47 +325,19 @@ class CODOperator(nn.Module):
         Clamps remaining: `Rf.clamp(0.8, 1.5)` and
         `T_HS_K.clamp(313.15, 573.15)`, both matching `fast_rhs_np`.
         """
-        ns = theta_TO_grid.shape[1]
-        B = t.shape[0]
-        ds = self.T / (ns - 1)
-        full_ns = self.n_sensors
-        if ns != full_ns:
-            idx_f = torch.linspace(0, full_ns - 1, ns, device=t.device)
-            idx_lo = idx_f.long().clamp(0, full_ns - 2)
-            frac = (idx_f - idx_lo.float()).unsqueeze(0)
-            K_s = (u_sensors[:, :full_ns][:, idx_lo] * (1 - frac)
-                   + u_sensors[:, :full_ns][:, idx_lo + 1] * frac)
-        else:
-            K_s = u_sensors[:, :ns]
-
-        R = self.R_load_buf
-        me = self.m_exp_buf
-        ac = self.alpha_Cu_buf
-        Tr = self.T_HS_ref_C_buf
-        Dhs = self.DTheta_HS_R_buf
-        fac_m0 = ((1.0 + K_s ** 2 * R) / (1.0 + R)) ** me
-        th_HS0 = theta_TO_grid + Dhs * fac_m0
-        Rf = (1.0 + ac * (th_HS0 - Tr)).clamp(0.8, 1.5)
-        fac_m1 = ((1.0 + K_s ** 2 * R * Rf) / (1.0 + R)) ** me
-        theta_HS_s = theta_TO_grid + Dhs * fac_m1
-        if self.legacy_V_clamp:
-            T_HS_K_s = (theta_HS_s + 273.15).clamp(T_HS_K_MIN)
-        else:
-            T_HS_K_s = (theta_HS_s + 273.15).clamp(T_HS_K_MIN, T_HS_K_MAX)
-        V_arr_s = torch.exp(
-            B_aging * self.E_act_buf * (1.0 / T_ref - 1.0 / T_HS_K_s.unsqueeze(-1))
-        )
-        if self.legacy_V_clamp:
-            V_arr_s = V_arr_s.clamp(max=LEGACY_V_ARR_CAP)
-        pd_s = 1.0 + PD_gain * (K_s - K_PD_onset).clamp(min=0.0) ** 2
-        V_arr_s = V_arr_s.clone()
-        V_arr_s[:, :, 1] = V_arr_s[:, :, 1] * pd_s
-        integrand = self.k_gen_buf * V_arr_s
-        trap = 0.5 * (integrand[:, :-1, :] + integrand[:, 1:, :]) * ds
-        F_grid = torch.cat(
-            [torch.zeros(B, 1, 5, device=t.device), torch.cumsum(trap, dim=1)], dim=1)
-        F_t = self._interp_grid_5d(F_grid, t)
-        return x0_gas + F_t - self.k_dis_buf * x0_gas * t
+        # Delegated to `cod.models.cascade.gas_integral`, which is the one
+        # definition of this quadrature. The C-11 in-cascade configurations of
+        # FNO, MIONet and S-DeepONet need the same physics, and a second copy is
+        # the defect CLAUDE.md names by example (`ode_physics_loss` existed three
+        # times). The model's own buffers and interpolator are passed in, so the
+        # delegation is bit-identical rather than merely equal to within float32
+        # rounding — `audit_port/scripts/29_cascade_refactor_identical.py` checks
+        # that against this file's pre-refactor version read out of git, and the
+        # Phase 1 gates are the end-to-end check.
+        return gas_integral(
+            t, u_sensors, x0_gas, theta_TO_grid, self.T, self.n_sensors,
+            self.k_gen_buf, self.k_dis_buf, self.E_act_buf,
+            self._interp_grid_5d, self.legacy_V_clamp)
 
     def forward(self, x0, u_sensors, t, theta_ss_grid=None):
         """`theta_ss_grid`, if given, is theta_ss on the sensor grid, (B, n_sensors).

@@ -42,6 +42,11 @@ from cod.data.steady_state import formula_A, true_fixed_point_np
 from cod.eval.benchmark import evaluate
 from cod.eval.metrics import TRANSFORMER_STATES, evaluate_state, report
 from cod.models.cod import CODOperator, cod_predict
+from cod.models.fno import (FNO_LAYERS, FNO_MODES, FNO_WIDTH, FNOInCascade,
+                            FNOMonolithic, fno_predict)
+from cod.models.mionet import (MIONET_DEPTH, MIONET_P, MIONET_WIDTH,
+                               MIONetInCascade, MIONetMonolithic,
+                               mionet_predict)
 from cod.models.monolithic import (
     MonolithicFair,
     MonolithicMultiHead,
@@ -59,14 +64,27 @@ MODEL_BUILDERS = {
     "monolithic_softic": MonolithicSoftIC,
 }
 
+#: C-11 tier-1 baselines. Each architecture appears twice: `monolithic` predicts
+#: all six states, `in_cascade` predicts theta_TO with the gases by quadrature.
+#: The pair is the one-variable test — if the monolithic form fails and the
+#: in-cascade form does not, the cascade is what was missing and the architecture
+#: is not at fault.
+MATRIX_BUILDERS = {
+    "fno_monolithic": (FNOMonolithic, fno_predict),
+    "fno_in_cascade": (FNOInCascade, fno_predict),
+    "mionet_monolithic": (MIONetMonolithic, mionet_predict),
+    "mionet_in_cascade": (MIONetInCascade, mionet_predict),
+}
+
 
 def build_model(cfg, x_mean, x_std, device):
     """Instantiate the model named by `cfg['model']['kind']`."""
     m = cfg["model"]
     kind = m["kind"]
-    if kind not in MODEL_BUILDERS:
-        raise ValueError(f"unknown model kind {kind!r}; "
-                         f"expected one of {sorted(MODEL_BUILDERS)}")
+    if kind not in MODEL_BUILDERS and kind not in MATRIX_BUILDERS:
+        raise ValueError(
+            f"unknown model kind {kind!r}; expected one of "
+            f"{sorted(MODEL_BUILDERS) + sorted(MATRIX_BUILDERS)}")
 
     d_h = int(m.get("branch", {}).get("width", 128))
     p = int(m.get("basis_dim", 64))
@@ -74,6 +92,29 @@ def build_model(cfg, x_mean, x_std, device):
     n_exp_feats = int(m.get("n_exp_feats", 12))
     n_sensors = int(cfg["distribution"].get("n_sensors", 100))
     T = float(cfg["distribution"]["window_minutes"])
+
+    if kind in MATRIX_BUILDERS:
+        cls, predict = MATRIX_BUILDERS[kind]
+        # Each architecture reads its own hyperparameters from the config under
+        # `model.<family>`, defaulting to the values its paper reports. Which
+        # values came from the paper and which had to be chosen is PORT_LOG J-90;
+        # the defaults here are the paper's, so a config that overrides one is
+        # visibly departing from the reference rather than silently doing so.
+        if kind.startswith("fno"):
+            f = m.get("fno", {})
+            model = cls(n_sensors=n_sensors, width=int(f.get("width", FNO_WIDTH)),
+                        modes=int(f.get("modes", FNO_MODES)),
+                        n_layers=int(f.get("layers", FNO_LAYERS)), T=T,
+                        x_mean=x_mean, x_std=x_std,
+                        domain_padding=int(f.get("domain_padding", 0)))
+        else:
+            mi = m.get("mionet", {})
+            model = cls(n_sensors=n_sensors,
+                        width=int(mi.get("width", MIONET_WIDTH)),
+                        depth=int(mi.get("depth", MIONET_DEPTH)),
+                        p=int(mi.get("basis_dim", MIONET_P)), T=T,
+                        x_mean=x_mean, x_std=x_std)
+        return model, predict
 
     if kind == "cod":
         model = CODOperator(

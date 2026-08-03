@@ -194,4 +194,57 @@ def _theta_ss_true(K_t, Ta_t, R_buf, ne_buf, me_buf, Do_buf, Dhs_buf,
         T_HS_ref_C_v=Tr_buf)
 
 
-__all__ = ["ModifiedMLP", "build_trunk_feats", "interp_sensors"]
+def ic_mask(t, tau, T):
+    """The first-order envelope `phi(t)` that makes a prediction satisfy `x(0) = x0`.
+
+        phi(t) = (1 - exp(-t/tau)) / (1 - exp(-T/tau)),   phi(0) = 0, phi(T) = 1
+
+    A model returning `x0 + phi(t) * scale * net(...)` satisfies the initial
+    condition exactly by construction, which is the Lagaris et al. (1998) ansatz
+    DECISIONS records as prior art for this device.
+
+    **This is protocol, not architecture.** Every model in the C-11 matrix is
+    given the same mask and the same output scaling, because they are properties
+    of the problem — the initial state is an input, and the six states span orders
+    of magnitude — and not of FNO, MIONet or S-DeepONet. If one architecture had
+    to learn to satisfy the IC while another got it free, a failure could not be
+    attributed to the architecture, which is the entire purpose of the matrix.
+    None of the three source papers specifies an IC mask, because none of their
+    benchmark problems has a varying initial condition in the operator input.
+
+    Defined here once. `MonolithicFair` computed it inline and now calls this;
+    the Phase 1 gates cover that model and check the refactor changed nothing.
+    """
+    return (1 - torch.exp(-t / tau)) / (1 - torch.exp(-T / tau))
+
+
+def per_state_output_scale_raw(x_std, state_dim: int = 6):
+    """Per-state learnable output scale, initialised from the IC standard deviations.
+
+    n15 cell 2 L306-L310. The `torch.where(init_scale > 20, init_scale,
+    log(expm1(init_scale) + 1e-6))` is a softplus pre-image only on the second
+    branch; above 20 the raw value is used directly because softplus is
+    effectively the identity there. This is the "KEY FIX" the source labels as
+    what separates Mono Fair from the earlier `PIDeepONet_Mono`.
+
+    The `> 20` branch is not cosmetic and the reason belongs here: `log(expm1(x))`
+    **overflows float32 at x ~ 88**, and `x_std` for `c_CO2` is of order 100. A
+    naive inverse softplus therefore initialises that state's scale to `inf` and
+    the model returns NaN on the first forward pass. Writing that naive version in
+    `mionet.py` is exactly what happened, and the smoke test caught it; the fix is
+    to have one definition of this, here, rather than a second one per model.
+
+    Moved from `monolithic.py` so every C-11 matrix model shares it. Like
+    `ic_mask` this is protocol, not architecture: the six states span orders of
+    magnitude, which is a property of the system and not of any network.
+    """
+    if x_std is None:
+        return torch.nn.Parameter(torch.zeros(state_dim))
+    init_scale = torch.tensor(x_std, dtype=torch.float32).clamp(min=1.0)
+    raw = torch.where(init_scale > 20, init_scale,
+                      torch.log(torch.expm1(init_scale) + 1e-6))
+    return torch.nn.Parameter(raw)
+
+
+__all__ = ["ModifiedMLP", "build_trunk_feats", "interp_sensors", "ic_mask",
+           "per_state_output_scale_raw"]

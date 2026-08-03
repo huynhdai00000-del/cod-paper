@@ -55,7 +55,8 @@ from cod.data.physics import (
     m_exp,
     tau_oil,
 )
-from cod.models.blocks import ModifiedMLP, build_trunk_feats
+from cod.models.blocks import (ModifiedMLP, build_trunk_feats, ic_mask,
+                               per_state_output_scale_raw)
 
 
 def _register_physics_buffers(module: nn.Module, ne_value) -> None:
@@ -75,20 +76,10 @@ def _register_physics_buffers(module: nn.Module, ne_value) -> None:
 
 
 def _per_state_output_scale_raw(x_std) -> nn.Parameter:
-    """Per-state learnable output scale, initialised from the IC standard deviations.
-
-    n15 cell 2 L306-L310. The `torch.where(init_scale > 20, init_scale,
-    log(expm1(init_scale) + 1e-6))` is a softplus pre-image only on the second
-    branch; above 20 the raw value is used directly because softplus is
-    effectively the identity there. This is the "KEY FIX" the source labels as
-    what separates Mono Fair from the earlier `PIDeepONet_Mono`.
-    """
-    if x_std is None:
-        return nn.Parameter(torch.zeros(STATE_DIM_FAST))
-    init_scale = torch.tensor(x_std, dtype=torch.float32).clamp(min=1.0)
-    raw = torch.where(init_scale > 20, init_scale,
-                      torch.log(torch.expm1(init_scale) + 1e-6))
-    return nn.Parameter(raw)
+    """Moved to `cod.models.blocks.per_state_output_scale_raw`, shared with the
+    C-11 matrix models. Kept as a thin alias so this module's own call sites and
+    the Phase 1 gates read unchanged; the definition lives in one place."""
+    return per_state_output_scale_raw(x_std, STATE_DIM_FAST)
 
 
 class MonolithicFair(nn.Module):
@@ -146,7 +137,9 @@ class MonolithicFair(nn.Module):
         tr = self.trunk(tf)
         dot = b * tr
         raw_out = self.out_proj(dot) + self.bias
-        phi = (1 - torch.exp(-t / self.tau)) / (1 - torch.exp(-self.T / self.tau))
+        # Was inline; now one definition shared with every C-11 matrix model
+        # (cod.models.blocks.ic_mask). Identical expression — gate 3 checks it.
+        phi = ic_mask(t, self.tau, self.T)
         return x0 + phi * self.output_scale * raw_out
 
 
@@ -206,7 +199,9 @@ class MonolithicMultiHead(nn.Module):
                                self.Do, self.Dhs, self.ac, self.Tr)
         tr = self.trunk(tf)
         raw_out = (b * tr.unsqueeze(1)).sum(-1) + self.bias
-        phi = (1 - torch.exp(-t / self.tau)) / (1 - torch.exp(-self.T / self.tau))
+        # Was inline; now one definition shared with every C-11 matrix model
+        # (cod.models.blocks.ic_mask). Identical expression — gate 3 checks it.
+        phi = ic_mask(t, self.tau, self.T)
         return x0 + phi * self.output_scale * raw_out
 
 
