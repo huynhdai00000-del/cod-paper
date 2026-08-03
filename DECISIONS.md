@@ -399,6 +399,18 @@ Reference bằng LSODA chạy liên tục toàn chân trời, không chia cửa 
   Model dự đoán EOL **muộn hơn** sự thật, đúng chiều của bias lạnh: đọc DP cao
   hơn nên tưởng máy còn khỏe. +0,17 tháng ≈ 5 ngày trên tuổi thọ 17 tháng.
 
+  **Cách phát biểu trong bài — phải viết đúng thế này.** Tuyên bố là **quá trình
+  truyền từ sai số nhiệt sang tuổi thọ đã được đặc trưng hóa và diễn ra đúng như
+  vật lý dự đoán**: bias −0,5 °C, một dấu, không tích lũy qua 1400 lần reset cửa
+  sổ, dịch EOL 1,0% đúng chiều mà bias lạnh bắt buộc. Tuyên bố **không phải** là
+  "sai số EOL bằng 1% ở điều kiện vận hành".
+
+  Con số 16,8 tháng là **kịch bản đo**, không phải tuổi thọ dịch vụ. K=1,10 là
+  quá tải duy trì, chọn vì đó là kịch bản duy nhất chạm EOL với chi phí khả thi;
+  các tải thực tế (0,85/0,95/1,00) sau một năm DP mới xuống 974/877/740, tức còn
+  hàng chục năm và vẫn `censored`. Một kỹ sư đọc "tuổi thọ 17 tháng" sẽ nhận ra
+  ngay điều đó, nên bài phải nói trước, không để người đọc tự phát hiện.
+
   Hai lỗi phải sửa trước khi con số này có nghĩa, cả hai đều tự gây ra:
   1. `eol_months` dùng `np.argmax(inv >= target)`, mà `argmax` trên mảng toàn
      False trả về 0 — không phân biệt được với "chạm ngay cửa sổ đầu". Cộng thêm

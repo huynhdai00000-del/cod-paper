@@ -58,6 +58,22 @@ CELLS = {
         "notes": "MIONet predicting theta_TO only; gases by Arrhenius quadrature.",
         "mionet": {"depth": 2, "width": 200, "basis_dim": 200},
     },
+    "sdeeponet_monolithic": {
+        "kind": "sdeeponet_monolithic",
+        "notes": "S-DeepONet (He et al. 2024), GRU branch, all six states. "
+                 "TRUNK TAKES t, not spatial coordinates -- the published design "
+                 "has the trunk take (x,y) with time entering only via the "
+                 "branch. See PORT_LOG J-90; this is a departure, not a "
+                 "parameter change, and is a candidate explanation if this cell "
+                 "underperforms.",
+        "sdeeponet": {"cell": "gru", "trunk_layers": 6},
+    },
+    "sdeeponet_in_cascade": {
+        "kind": "sdeeponet_in_cascade",
+        "notes": "S-DeepONet predicting theta_TO only; gases by quadrature. "
+                 "Same trunk departure as above.",
+        "sdeeponet": {"cell": "gru", "trunk_layers": 6},
+    },
 }
 
 

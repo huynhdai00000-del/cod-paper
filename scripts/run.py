@@ -47,6 +47,9 @@ from cod.models.fno import (FNO_LAYERS, FNO_MODES, FNO_WIDTH, FNOInCascade,
 from cod.models.mionet import (MIONET_DEPTH, MIONET_P, MIONET_WIDTH,
                                MIONetInCascade, MIONetMonolithic,
                                mionet_predict)
+from cod.models.sdeeponet import (SDON_CELL, SDON_TRUNK_LAYERS,
+                                  SDeepONetInCascade, SDeepONetMonolithic,
+                                  sdeeponet_predict)
 from cod.models.monolithic import (
     MonolithicFair,
     MonolithicMultiHead,
@@ -74,6 +77,8 @@ MATRIX_BUILDERS = {
     "fno_in_cascade": (FNOInCascade, fno_predict),
     "mionet_monolithic": (MIONetMonolithic, mionet_predict),
     "mionet_in_cascade": (MIONetInCascade, mionet_predict),
+    "sdeeponet_monolithic": (SDeepONetMonolithic, sdeeponet_predict),
+    "sdeeponet_in_cascade": (SDeepONetInCascade, sdeeponet_predict),
 }
 
 
@@ -107,13 +112,20 @@ def build_model(cfg, x_mean, x_std, device):
                         n_layers=int(f.get("layers", FNO_LAYERS)), T=T,
                         x_mean=x_mean, x_std=x_std,
                         domain_padding=int(f.get("domain_padding", 0)))
-        else:
+        elif kind.startswith("mionet"):
             mi = m.get("mionet", {})
             model = cls(n_sensors=n_sensors,
                         width=int(mi.get("width", MIONET_WIDTH)),
                         depth=int(mi.get("depth", MIONET_DEPTH)),
                         p=int(mi.get("basis_dim", MIONET_P)), T=T,
                         x_mean=x_mean, x_std=x_std)
+        else:
+            sd = m.get("sdeeponet", {})
+            model = cls(n_sensors=n_sensors,
+                        cell=str(sd.get("cell", SDON_CELL)),
+                        trunk_layers=int(sd.get("trunk_layers",
+                                                SDON_TRUNK_LAYERS)),
+                        T=T, x_mean=x_mean, x_std=x_std)
         return model, predict
 
     if kind == "cod":
@@ -130,7 +142,8 @@ def build_model(cfg, x_mean, x_std, device):
     return model, mono_predict
 
 
-def build_trainer(cfg, model, predict_fn, ts, device, max_epochs):
+def build_trainer(cfg, model, predict_fn, ts, device, max_epochs,
+                  batch_size=None, n_collocation=None):
     """Pick the training loop the config asks for.
 
     `loop: train_v34` is what trained the headline COD model; `train_physics` is
@@ -145,8 +158,11 @@ def build_trainer(cfg, model, predict_fn, ts, device, max_epochs):
     kwargs = dict(
         x0s=ts.x0s, sensors=ts.sensors, device=device,
         lr=float(t.get("lr", 1e-3)),
-        n_fb=int(t.get("batch_size", 128)),
-        n_col=int(t.get("n_collocation", 80 if loop == "train_v34" else 60)),
+        n_fb=int(batch_size if batch_size is not None
+                 else t.get("batch_size", 128)),
+        n_col=int(n_collocation if n_collocation is not None
+                  else t.get("n_collocation",
+                             80 if loop == "train_v34" else 60)),
         n_chunks=int(t.get("n_chunks", 5)),
         max_epochs=max_epochs,
         seed=int(t.get("seed", 0)),
@@ -175,6 +191,13 @@ def main() -> int:
                          "models differ in cost per step (audit B-1).")
     ap.add_argument("--n-ic", type=int, default=None,
                     help="Override the config's n_ic (smoke tests).")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="Override training.batch_size (smoke tests). The "
+                         "recurrent S-DeepONet branch is recomputed per "
+                         "collocation point, so batch x n_collocation drives "
+                         "its memory; a wiring test needs both small.")
+    ap.add_argument("--n-collocation", type=int, default=None,
+                    help="Override training.n_collocation (smoke tests).")
     ap.add_argument("--n-test", type=int, default=None,
                     help="Override the number of evaluation cases.")
     ap.add_argument("--device", default=None, choices=["cpu", "cuda"])
@@ -212,7 +235,9 @@ def main() -> int:
                   else int(cfg["training"]["convergence"]["max_epochs"]))
     T = float(dist["window_minutes"])
 
-    smoke = args.max_epochs is not None or args.n_ic is not None
+    smoke = (args.max_epochs is not None or args.n_ic is not None
+             or args.batch_size is not None
+             or args.n_collocation is not None)
     out_dir = (Path(args.out) / f"{cfg['experiment']['name']}_"
                f"{cfg['experiment']['variant']}_s{seed}_{cfg.hash}"
                f"{'_smoke' if smoke else ''}"
@@ -321,7 +346,9 @@ def main() -> int:
     print(f"[model] {cfg['model']['kind']}  {model.n_parameters():,} parameters")
 
     # ── Train ──────────────────────────────────────────────────────────────
-    trainer, loop = build_trainer(cfg, model, predict_fn, ts, device, max_epochs)
+    trainer, loop = build_trainer(cfg, model, predict_fn, ts, device,
+                                  max_epochs, args.batch_size,
+                                  args.n_collocation)
     crit_cfg = dict(cfg["training"]["convergence"])
     crit_cfg["max_epochs"] = max_epochs
     if args.max_wall_seconds is not None:

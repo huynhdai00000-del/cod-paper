@@ -1624,6 +1624,157 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-90 C-11 tier 1: what was adapted, how the budget is matched, what was chosen
+
+Three decisions that must be on the record **before** any of these architectures
+produces a number, because each is a candidate explanation for a bad result and a
+reader cannot weigh them after the fact.
+
+---
+
+#### 1. What counts as a faithful adaptation
+
+Each architecture was published on benchmarks unlike this one. The question for
+each is what had to change, and whether the change is a parameter or a
+redefinition.
+
+**FNO — small adaptation.** The paper's domains are spatial; ours is time. A 1-d
+FNO over `t` with the paper's own 1-d hyperparameters is a direct instantiation,
+not a reinterpretation. `x0` is broadcast as constant channels, which is how an
+FNO takes a non-field conditioning input and keeps the operator a function-to-
+function map on one domain.
+
+*The periodicity question, and its cost.* The FFT treats the window as periodic
+and a 12 h thermal window is not — `theta_TO(0) != theta_TO(T)`, since the window
+is a slice of a 24 h day at random phase. The paper answers this itself (§5.5):
+the `W` term is a local linear transform in physical space, outside the FFT, that
+"keeps the track of non-periodic boundary", demonstrated on Darcy flow and on the
+non-periodic time domain of Navier-Stokes. So the design carries the answer. What
+it costs is real and is not removed by that argument: the spectral branch still
+imposes a periodic extension, sees a jump of `theta_TO(T) - theta_TO(0)` at the
+edge, and pays Gibbs ringing that `W` must cancel. Two falsifiable predictions
+follow — error should be worst at the window endpoints, and the burden on `W`
+should grow with endpoint mismatch, i.e. with load swing, which is the regime the
+Jensen argument cares about. `domain_padding` exists and defaults **off**: padding
+to force artificial periodicity is a later refinement of the reference
+implementation, not in this paper, so switching it on is a deviation to be
+recorded rather than a free improvement.
+
+A second FNO cost: it is a function-to-function map, so it produces the trajectory
+on the grid and a query at arbitrary `t` is an interpolation. `d/dt` through a
+linear interpolant is piecewise constant — 100 pieces over 720 min, i.e. 7.2 min
+against `tau_oil = 150` min. The dynamics are resolved at that spacing, but the
+physics residual sees a staircase derivative where COD's trunk gives a smooth one.
+
+**MIONet — no adaptation of the architecture, two devices withheld.** The problem
+is natively multi-input (`x0`, `K`, `theta_a`), which is the restriction MIONet
+exists to lift, so the low-rank Eq. (16) applies unchanged and Corollary 3(iii)
+covers six outputs from shared branches. Two of the paper's own accuracy devices
+are **not** used, each because its precondition is false here, and both are
+withheld deliberately so that "MIONet was not given its best case" is on record:
+
+* the linear branch for the initial condition (§4.3) requires `G` linear in that
+  input (Corollary 4); ours is exponential in `theta_TO` through `V_arr`;
+* the periodic trunk layer (§4.3), which produced the best result in that paper,
+  requires periodicity in the trunk variable; a 12 h slice at random phase has
+  none.
+
+**S-DeepONet — the primary adaptation, and a real departure.** State plainly:
+
+> In the published design **the trunk takes spatial coordinates**. Its input is
+> `(x, y)`, the nodal coordinates of a 2-D mesh, and **time enters only through
+> the GRU branch** as the load history. The network predicts the field **at the
+> end of the load step** — one spatial field per case, never a trajectory.
+>
+> **Our problem has no spatial domain.** The state is six scalars in time and the
+> operator must be queryable at arbitrary `t`. The only available mapping is to
+> give the trunk `t`.
+>
+> **That makes both the branch and the trunk temporal, which the paper's design
+> never does. It is a change in what the architecture is for, not a change of a
+> hyperparameter.**
+
+Two consequences. The paper's division of labour disappears: there the branch
+encodes *when* and the trunk encodes *where*, and the dot product combines two
+kinds of information; here both encode time, so the merge combines a summary of a
+history with a query point inside that same history, and the recurrent branch's
+causal encoding is no longer complementary to the trunk in the way the paper
+relies on. And the target changes from an end-of-window field to a trajectory —
+the paper never asks its network to be accurate at intermediate times, so its
+reported accuracy is not evidence about this use.
+
+**What it means for the comparison: if S-DeepONet underperforms, this adaptation
+is a live candidate explanation and must be weighed against "the architecture is
+unsuited to the problem". The headline number cannot separate them.** The
+in-cascade configuration removes the gas states from the question but nothing in
+the matrix separates "a recurrent branch paired with a temporal trunk is the wrong
+pairing" from "a recurrent branch is the wrong encoder here".
+
+The faithful alternative was considered and rejected with reasons: predict only
+the window-end state and roll windows for a trajectory. That keeps the paper's
+setup exactly, and it would make S-DeepONet the only cell unable to answer a query
+at arbitrary `t`, unable to enter the swing-fidelity measurement that C-11's
+honesty protocol requires, and scored on a different quantity from every other
+cell. That trades the comparison for the fidelity, so the departure is taken and
+disclosed instead.
+
+---
+
+#### 2. How the hyperparameter search budget is matched
+
+C-11 says equal **wall clock**, not equal epochs, because audit B-1 found the same
+25,000 epochs running 4.6x apart in time. Concretely, before anything trains:
+
+1. **One budget figure, applied identically.** The tier-1 budget is a single
+   `max_wall_seconds`, set where COD converges comfortably, then given to every
+   cell via `run.py --max-wall-seconds`. It is **not** the 7200 s in
+   `example_cod_seed1.yaml`, which was chosen for O-5's different purpose and is
+   annotated in that file as not to be inherited. `make_matrix_configs.py`
+   deliberately leaves the base value in place rather than baking in a number that
+   has not been decided.
+2. **The search gets the same budget as one training run, per architecture.** Each
+   architecture receives one hyperparameter search whose *total* wall clock equals
+   the budget of a single main-method run, and that search is reported. A
+   baseline that was never tuned is not evidence about the architecture; a
+   baseline tuned for longer than the method is not a fair comparison either.
+3. **Epochs are an outcome, not a budget.** `run.py` already records
+   `epochs_reached` next to `wall_seconds`, and a run that stops on
+   `wall_clock_budget` is reported as non-converged rather than as a number.
+4. **Cost per step is a property of the architecture and is not compensated.**
+   Measured during the smoke tests: the S-DeepONet recurrent branch is recomputed
+   at every collocation point, so its activations scale as
+   `batch x n_collocation x n_sensors x 256` and it exhausted CPU memory at the
+   config's `batch_size = 64, n_collocation = 60` where every other cell ran. That
+   is a real cost of a recurrent branch under a collocation-based physics loss and
+   the wall-clock protocol is what makes it visible instead of hiding it in an
+   epoch count. It does mean the matrix run needs either a smaller batch for that
+   cell or a cached branch encoding; **whichever is chosen must be recorded,
+   because a smaller batch at equal wall clock is a different optimisation problem,
+   not just a slower one.**
+
+---
+
+#### 3. Which hyperparameters came from the papers, and which were chosen
+
+| architecture | from the paper | chosen here, and why |
+|---|---|---|
+| FNO | `k_max = 16`, `d_v = 64` (§5, the 1-d configuration); 4 Fourier layers; ReLU; batch norm; `W` as a width-1 conv | projection head `Linear(width,128)-ReLU-Linear(128,out)` — the paper says only "a neural network Q"; input channel set (`K`, `theta_a`, `x0` broadcast, `t/T`); `domain_padding = 0` |
+| MIONet | low-rank Eq. (16); Hadamard merge and sum; trainable bias (Corollary 2); depth 2, width 200 (§4.1, the ODE experiment — the closest of its three benchmarks); ReLU; Adam 1e-3 | `p = 200` (the paper reports width, not `p`, separately); one branch per input function rather than per input *vector*; trunk input normalised to `t/T` because the paper's output domain is the unit interval |
+| S-DeepONet | GRU encoder 256->128, decoder 128->256 (§2.1.2, Fig. 2); tanh in all recurrent layers; time-distributed linear head; trunk FNN of 6 layers with ReLU; hidden dim = number of input time steps; dot product plus bias | GRU rather than LSTM (the paper reports both at near-equal accuracy, 792k vs 1,039k parameters, and the budget is wall clock); `x0` broadcast into the input sequence, which the paper never faces because its IC is a fixed uniform `T_0` |
+
+**Shared across all cells and belonging to none of the papers** — `blocks.ic_mask`
+and `blocks.per_state_output_scale_raw`. These are protocol: the initial condition
+is an operator input and the six states span orders of magnitude, neither of which
+is true of the source benchmarks, where inputs are O(1) GRF samples and the IC is
+fixed. Giving one architecture the IC by construction while another must learn it
+would make a failure unattributable, which is exactly what the matrix exists to
+prevent. Both are applied identically to COD, the monolithic baselines, FNO,
+MIONet and S-DeepONet.
+
+Recorded before training so that the answer to "did this baseline fail because the
+architecture cannot do this, or because it was never tuned for it?" is a document
+and not a reconstruction.
+
 ### J-89 FAILURE MODE "silent sentinel": the degenerate case returns a plausible number
 
 Named because it has now happened three times, in three unrelated metrics, and
