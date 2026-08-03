@@ -29,7 +29,19 @@ Neither a startup transient nor large enough to invalidate the run. Recorded bec
 
 * state_hi: fires past the midpoint (last spike epoch 926 of 1200) but is **small and sporadic** — peak 6.2%, only 5 epochs above 5%, mean 1.1% over the second half. Persistent at a low level rather than large; not a startup transient either.
 
-## Caveat
+## Caveats
 
-The budget is reduced, so 'fraction of training' here is a fraction of a much shorter run. That makes the test **conservative** for the benign verdict: a clamp gets fewer epochs to decay, so if it is quiet by a quarter of this run it is quiet far earlier as a fraction of the real one. It is not conservative in the other direction — a clamp that fires late here would need re-checking on a full run with the series now recorded.
+**Timing generalises; magnitude does not.** The budget is reduced, so 'fraction of training' here is a fraction of a much shorter run. That makes the test **conservative** for the benign verdict: a clamp gets fewer epochs to decay, so if it is quiet by a quarter of this run it is quiet far earlier as a fraction of the real one. It is not conservative in the other direction — a clamp that fires late here needs re-checking on a full run.
+
+**The peaks here understate the real run**, measured against O-5's `run.json` (which records peaks but not the series that would place them in time):
+
+| clamp | this diagnostic | O-5 peak | O-5 final |
+|---|---|---|---|
+| `Rf_etc` | 66.7% | 69.7% | 0.0% |
+| `T_HS_min` | 65.1% | 68.3% | 0.0% |
+| `state_lo` | 52.4% | 59.9% | 0.0% |
+| `V_arr_max` | 8.0% | **34.6%** | 0.0% |
+| `state_hi` | 6.2% | **15.8%** | 1.6% |
+
+The three large clamps land within a few points. `V_arr_max` and `state_hi` are understated here by 4.3x and 2.5x, so the *magnitude* of those two is a property of the specific initialisation and batch composition and does not transfer from a 200-IC run to an 8000-IC one. The conclusion this diagnostic supports is about **when**, not how hard. `state_hi` in particular peaks at 15.8% in the real run and is still at 1.6% at the final epoch — non-zero where every other clamp is exactly zero — so it is the one to read off the next full run's `clamp_history.json` rather than to settle from here.
 

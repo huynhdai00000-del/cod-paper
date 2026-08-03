@@ -253,15 +253,35 @@ def _score(outcome, hist, args) -> int:
         for nte in notes:
             md.append(f"* {nte}")
         md.append("")
-    md.append("## Caveat\n")
-    md.append("The budget is reduced, so 'fraction of training' here is a "
-              "fraction of a much shorter run. That makes the test "
-              "**conservative** for the benign verdict: a clamp gets fewer "
-              "epochs to decay, so if it is quiet by a quarter of this run it "
-              "is quiet far earlier as a fraction of the real one. It is not "
-              "conservative in the other direction — a clamp that fires late "
-              "here would need re-checking on a full run with the series now "
-              "recorded.\n")
+    md.append("## Caveats\n")
+    md.append("**Timing generalises; magnitude does not.** The budget is "
+              "reduced, so 'fraction of training' here is a fraction of a much "
+              "shorter run. That makes the test **conservative** for the benign "
+              "verdict: a clamp gets fewer epochs to decay, so if it is quiet by "
+              "a quarter of this run it is quiet far earlier as a fraction of "
+              "the real one. It is not conservative in the other direction — a "
+              "clamp that fires late here needs re-checking on a full run.\n")
+    md.append("**The peaks here understate the real run**, measured against "
+              "O-5's `run.json` (which records peaks but not the series that "
+              "would place them in time):\n")
+    md.append("| clamp | this diagnostic | O-5 peak | O-5 final |")
+    md.append("|---|---|---|---|")
+    md.append("| `Rf_etc` | 66.7% | 69.7% | 0.0% |")
+    md.append("| `T_HS_min` | 65.1% | 68.3% | 0.0% |")
+    md.append("| `state_lo` | 52.4% | 59.9% | 0.0% |")
+    md.append("| `V_arr_max` | 8.0% | **34.6%** | 0.0% |")
+    md.append("| `state_hi` | 6.2% | **15.8%** | 1.6% |")
+    md.append("")
+    md.append("The three large clamps land within a few points. `V_arr_max` and "
+              "`state_hi` are understated here by 4.3x and 2.5x, so the "
+              "*magnitude* of those two is a property of the specific "
+              "initialisation and batch composition and does not transfer from a "
+              "200-IC run to an 8000-IC one. The conclusion this diagnostic "
+              "supports is about **when**, not how hard. `state_hi` in "
+              "particular peaks at 15.8% in the real run and is still at 1.6% at "
+              "the final epoch — non-zero where every other clamp is exactly "
+              "zero — so it is the one to read off the next full run's "
+              "`clamp_history.json` rather than to settle from here.\n")
     OUT.write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"\nWrote {OUT}\nWrote {JSON_OUT}")
 
