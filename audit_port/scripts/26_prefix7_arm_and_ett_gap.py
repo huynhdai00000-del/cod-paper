@@ -70,9 +70,14 @@ PERIOD_FIX_NEW = 13.18          # PERIOD_FIX.md §2, fix 7, N=200 seed 999
 N7_UPLIFT = 1.177               # DECISIONS N-7, = 13.18 / 11.20
 
 # ETT_LOAD_CALIBRATION.md medians, as a fraction of rated.
+# The back-feeding point matters most and was the one missing: C-13 identifies
+# PV back-feeding days as *the* operating mode the paper opens on, and at 29.7%
+# it sits above the frozen sampler's own 12-28% range, so no measurement inside
+# the sampler's band speaks for it.
 ETT_POINTS = [
     ("ETTh2, all days", 0.087),
     ("ETTh1, non-back-feeding days", 0.178),
+    ("ETTh1, back-feeding days", 0.297),
 ]
 
 # C-10's analytic table, for checking the measured gap against the curve. The
@@ -167,10 +172,35 @@ def arm(label, builder, p, seeds=SEEDS, n=N):
     return meds, pooled
 
 
+def gap_only(p_now) -> int:
+    """Part 2 alone: the Jensen gap at each ETT operating point.
+
+    Part 1's two sampler arms cost ~45 min and are already settled (N-11), so
+    re-running them to add an operating point would be pure waste.
+    """
+    print("=== Jensen gap at ETT-calibrated load swing (part 2 only) ===")
+    for lbl, amp in [("frozen sampler (12-28%)", None)] + list(ETT_POINTS):
+        p = p_now if amp is None else replace(p_now, K_amp=(amp, amp))
+        x0s, sens = build_realistic_set(N_GAP, 999, p)
+        sw, gaps = swings_and_gaps(x0s, sens, want_gap=True)
+        med = float(np.median(sw))
+        print(f"  {lbl:34s} K_amp {str(p.K_amp):16s} "
+              f"swing p25/med/p75 {np.percentile(sw, 25):5.2f}/{med:5.2f}/"
+              f"{np.percentile(sw, 75):5.2f}  "
+              f"DP {np.median(gaps[:, GAP_DP]):.3f}  "
+              f"C2H2 {np.median(gaps[:, GAP_C2H2]):.3f}  "
+              f"| C-10 curve at that swing: DP "
+              f"{np.interp(med, C10_AMPLITUDE, C10_DP):.3f} "
+              f"C2H2 {np.interp(med, C10_AMPLITUDE, C10_C2H2):.3f}")
+    return 0
+
+
 def main() -> int:
     p_now = RealisticParams.from_config(
         yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
         ["distribution"]["sampler"]["params"])
+    if "--gap-only" in sys.argv:
+        return gap_only(p_now)
     mod = load_prefix7_module()
     p_old, added = prefix7_params(mod, p_now)
     print(f"[git] pre-fix-7 sampler from {PREFIX7_REV}")

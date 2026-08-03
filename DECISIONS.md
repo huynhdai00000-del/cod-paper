@@ -237,6 +237,74 @@ loại máy bài nhắm tới.
 Phát biểu phạm vi: khoảng cách đáng kể với máy đấu nối tái tạo và máy tải biến
 động; máy chạy nền phẳng gần như không có khoảng cách nào để khai thác (N-4).
 
+### C-14. Phạm vi: benchmark mô tả một CHẾ ĐỘ VẬN HÀNH, không phải một đội máy
+Đóng O-10, 2026-08-03. Đây là lập luận, không phải khẳng định — chỗ yếu nhất
+được đánh dấu rõ ở §4 để phản đối được.
+
+**Số đo.** `26_prefix7_arm_and_ett_gap.py --gap-only`, N=400, seed 999, biên độ
+hot-spot đo bằng RK45, gap đo dọc quỹ đạo thật:
+
+| quần thể | K_amp | biên độ (p25/med/p75) | gap DP | gap C2H2 | C-10 tại biên độ đó |
+|---|---|---|---|---|---|
+| ETTh2, mọi ngày | 8,7% | 4,6 / **6,64** / 10,0 | 1,113 | 1,232 | 1,142 / 1,298 |
+| ETTh1, không phát ngược | 17,8% | 7,5 / **12,38** / 18,1 | 1,420 | 1,896 | 1,485 / 2,082 |
+| **sampler đóng băng** | 12-28% | 7,5 / **13,03** / 18,9 | 1,469 | 2,079 | 1,538 / 2,207 |
+| ETTh1, phát ngược | 29,7% | 11,2 / **19,84** / 31,5 | **2,275** | **4,203** | 2,348 / 4,361 |
+
+**§1. Sampler đóng băng đại diện cho cái gì.** Một **feeder phân phối có chu kỳ
+tải thông thường**. Biên độ hot-spot trung vị 13,03 °C của nó gần như trùng với
+ETTh1 ngày không phát ngược (12,38 °C) — hai con số cách nhau 5%, và đó là feeder
+thật duy nhất trong khoảng của nó. Không phải là suy luận: sampler được hiệu
+chuẩn để nhắm 10-15 °C và nó rơi đúng vào đó.
+
+**§2. Nó KHÔNG đại diện cho cái gì.** Hai đầu, và cả hai đều phải nói ra:
+
+- **Máy chạy nền phẳng.** ETTh2 ở 8,7% cho gap DP 1,113 — gần như không còn gì
+  để khai thác, khớp tuyên bố phạm vi N-4. Với lớp máy này phương pháp không có
+  lợi thế nào đáng kể so với tính ở nhiệt độ trung bình, và bài phải nói thẳng
+  chứ không im lặng.
+- **Máy đấu nối điện mặt trời phát ngược.** Ở 29,7% gap là DP **2,275** và C2H2
+  **4,203**, tức **cao hơn** headline 1,70 / 2,59 chứ không thấp hơn. Đây là chỗ
+  lật ngược lo ngại ban đầu của O-10: mối lo là sampler **lạc quan**, và so với
+  ETTh2 thì đúng, nhưng so với **chính lớp máy bài mở đầu** (C-13: PV phát ngược
+  là "đúng loại máy bài nhắm tới") sampler lại **bảo thủ**. 29,7% nằm ngoài dải
+  12-28% của sampler, nên model chưa từng được train hay test ở đó.
+
+**§3. Con số bài nên trích.** Đề xuất: **trích đường cong, không trích một số**,
+đúng như C-13 đã chốt — và khi buộc phải có một con số, trích **DP 1,42 / C2H2
+1,90** của ETTh1 không phát ngược, không phải 1,70 / 2,59.
+
+Lý do trích điểm đó chứ không phải điểm khác:
+- Nó là feeder **đo được**, không phải cấu trúc tổng hợp. 1,469 / 2,079 của
+  sampler gần bằng nhưng là một phân phối do ta tự dựng.
+- Nó nằm **trong** dải sampler, tức là điểm duy nhất vừa có feeder thật vừa có
+  model đã được train và test tại đó. Trích một gap ở chế độ mà benchmark không
+  phủ là đúng loại vượt quá đã khiến bài bị desk-reject.
+- 1,70 / 2,59 là C-10 tại ±15 °C, và **không feeder nào trong hai feeder đo được
+  đạt tới 15 °C** ở chế độ thông thường. Trích nó như giá trị điển hình là sai.
+
+**Đường cong C-10 đã được kiểm ở bốn điểm** trải 6,6 đến 19,8 °C, lệch 2-5% và
+luôn cùng chiều (nội suy tuyến tính của hàm lồi thì vượt lên). Đó là điều cho
+phép bài **dẫn bằng đường cong**: chế độ phát ngược khi đó là **ngoại suy dọc một
+đường cong đã kiểm chứng**, phải ghi rõ là ngoại suy chứ không phải phép đo.
+
+**§4. Chỗ yếu nhất, để phản đối.** n = 2 máy, một bộ dữ liệu, một vùng, hai năm.
+Không ước lượng được phân phối đội máy từ đó, và mọi phát biểu dạng "x% đội máy
+nằm trong dải này" đều không có cơ sở. Vì vậy phát biểu phải là **chế độ vận
+hành** ("với máy có chu kỳ tải biên độ ~18% định mức, khoảng cách là 1,42 trên
+DP"), không phải **tuyên bố đội máy** ("máy biến áp phân phối điển hình có khoảng
+cách 1,42"). Hai câu nghe giống nhau và chỉ một câu có bằng chứng.
+
+Phản đối hợp lý mà tôi không bác được: ngày phát ngược của ETTh1 là tập con của
+**một** máy, nên 29,7% và gap 2,275 kèm theo còn mỏng hơn cả 17,8%. Ai muốn lấy
+2,275 làm headline sẽ dựa lên n=1. Ngược lại ai muốn giữ 1,70 / 2,59 phải giải
+thích vì sao trích một biên độ mà không feeder đo được nào chạm tới ở chế độ
+thường. Tôi chọn 1,42 vì nó là điểm ít giả định nhất, không phải vì nó lớn nhất
+hay nhỏ nhất.
+
+Xem `audit_port/PREFIX7_ARM_AND_ETT_GAP.md` và
+`audit_port/ETT_LOAD_CALIBRATION.md`.
+
 ---
 
 ## OPEN — đang chờ
@@ -458,6 +526,14 @@ Hai điều kèm theo, ghi lại vì quan trọng hơn chính O-10:
    đo cùng tải đo nên kiểm được trực tiếp. Xem O-11.
 
 Chưa sửa gì trong `RealisticParams`, theo đúng yêu cầu báo cáo trước.
+
+**ĐÓNG 2026-08-03 bởi C-14.** Quyết định phạm vi đã lấy: benchmark mô tả một
+**chế độ vận hành** (feeder có chu kỳ tải thông thường, ≈ ETTh1 ngày không phát
+ngược), không phải một đội máy — n=2 không đỡ được tuyên bố phân phối. `K_amp`
+giữ nguyên 12-28%, không rescale: N-11 đã cho thấy hệ số 0,850 dựa trên một uplift
+không tái hiện được, và §1 của C-14 cho thấy dải hiện tại rơi đúng vào feeder thật
+duy nhất nằm trong nó. Lo ngại "sampler lạc quan" của mục này chỉ đúng khi so với
+máy chạy nền; so với lớp máy bài nhắm tới thì sampler bảo thủ.
 
 ### O-11. Hiệu chỉnh tham số nhiệt theo ETT — ĐÓNG 2026-07-29 dưới dạng GIỚI HẠN
 tau_oil, DTheta_oil_R, n_exp là mặc định IEC, giả định chứ không hiệu chỉnh,
