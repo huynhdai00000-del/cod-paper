@@ -1624,6 +1624,76 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-89 FAILURE MODE "silent sentinel": the degenerate case returns a plausible number
+
+Named because it has now happened three times, in three unrelated metrics, and
+each time it was caught by a human noticing an implausible number rather than by
+the metric noticing anything. Two of the three got into committed documents
+before being caught. This entry exists so the next metric is checked against the
+pattern **before** it produces a number, per CLAUDE.md's rule that every
+quantitative claim needs a verification script.
+
+**The pattern.** A metric is handed an input for which its answer is undefined —
+no signal, no error, no crossing — and instead of failing, refusing, or returning
+something unmistakable, it returns a finite number that lies inside the range of
+legitimate answers. Nothing downstream can tell that value apart from a real
+measurement. It has two forms:
+
+*Form A — the null case returns a plausible value.* The sentinel the code uses
+for "undefined" collides with a value the metric could legitimately produce.
+
+*Form B — the measurement is censored by its own subject.* A window, truncation
+or normalisation is derived from the quantity being measured, so the case of
+interest is excluded by construction rather than by data.
+
+**The three instances.**
+
+| # | metric | degenerate input | what it returned | what it should have |
+|---|---|---|---|---|
+| 1 | NMAE denominator floor (C-9) | ground truth that barely moves | `MAE / 1e-4`, a plausible percentage | refused: an absolute error wearing a percent sign |
+| 2 | `RolloutResult.theta_bias` (O-9) | a model with **zero error** | **-2.86 to -3.88 degC** | ~0 |
+| 3 | `eol_months` (O-7) | a rollout that never reaches EOL | **0.0 months** | `None`, i.e. censored |
+
+Instance 1 is Form A: the floor is a legitimate denominator for a case that
+genuinely varies by 1e-4, so a floored case and a real case are indistinguishable
+in the output. It survived long enough to produce the manuscript's 34,558%
+acetylene figure and, from the other direction, would have flattered the new
+benchmark until `28_gas_nmae_floor.py` measured the denominator against what an
+instrument resolves.
+
+Instance 2 is Form A at its worst: the metric's answer for a perfect model was not
+merely plausible but *large*, load-dependent and monotone — three properties that
+made it look like a physical finding. The manuscript built an ETC-staircase
+explanation on top of it. It took `ExactModel`, a model that cannot have error, to
+expose it.
+
+Instance 3 is both forms at once. Form A: `np.argmax(cond)` returns 0 when `cond`
+is all False, and window 0 is a legitimate crossing point, so "never crossed"
+and "crossed immediately" are the same value. Form B: `run_scenario` truncated the
+model rollout to the reference's length, and a cold-biased model reaches EOL
+*later* than the reference, so the model's EOL was censored exactly when the
+reference finished first — which the bias guarantees.
+
+**The check, before a metric is allowed to produce a number.**
+
+1. **Feed it the null case.** A zero-error model, a constant ground truth, an
+   empty crossing set. If it returns a finite number inside the legitimate range,
+   it is broken. `ExactModel` exists for this and should be the first call.
+2. **Is any sentinel inside the output range?** Index 0, a floor, a clamp, an
+   `argmax` default. If a legitimate answer can equal the sentinel, the sentinel
+   is wrong — return `None`, raise, or return a value outside the range.
+3. **Does any window, truncation or normaliser depend on the quantity being
+   measured?** If so it will censor the interesting case. Derive it from
+   something independent, or run both sides to their own extent and compare over
+   the intersection.
+4. **Do the stopping rule and the definition agree?** Instance 3's two halves
+   disagreed by one DP unit, which was enough to make the crossing never fire.
+5. **Can the gate fail?** Prove it by injection — `--inject-bias` and
+   `--smooth-test` exist for this and both were shown to fail on demand before
+   either was trusted.
+
+Steps 1 and 5 are cheap and would have caught all three.
+
 ### J-88 The faithful pre-fix-7 arm: the period was worth 0.9%
 
 `26_prefix7_arm_and_ett_gap.py` builds the arm J-87 was missing —

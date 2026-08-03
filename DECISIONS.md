@@ -153,9 +153,17 @@ sample. Không cache thì ma trận này mất 160 giờ GPU thay vì 30.
 **Tầng 1, neural operator, mỗi kiến trúc hai cấu hình (monolithic và trong
 cascade), 5 seed:**
 - PI-DeepONet Modified MLP (đã có code trong repo)
-- FNO (github.com/neuraloperator)
-- MIONet (github.com/lu-group/mionet)
-- S-DeepONet (github.com/Jasiuk-Research-Group/S-DeepONet)
+- FNO (github.com/neuraloperator) — Li et al. 2021, ICLR
+- MIONet (github.com/lu-group/mionet) — Jin, Meng & Lu 2022
+- S-DeepONet (github.com/Jasiuk-Research-Group/S-DeepONet) — He, Kushwaha, Park,
+  Koric, Abueidda, Jasiuk, EAAI 127 (2024) 107258. **Không được bỏ.** Đây là kiến
+  trúc duy nhất trong ma trận được thiết kế riêng cho **tải phụ thuộc thời gian**,
+  tức đúng bài toán này, nên thiếu nó là mời đúng câu hỏi reviewer sẽ hỏi. Thứ tự
+  triển khai: sau FNO và MIONet.
+
+Cả bốn paper đã có trong `reference/papers/`. Không kiến trúc nào được dựng từ
+trí nhớ — đọc paper trước khi port, và ghi vào PORT_LOG tham số nào lấy từ paper,
+tham số nào phải tự chọn (xem J-90).
 
 4 kiến trúc × 2 cấu hình × 5 seed = 40 run. Cấu hình "trong cascade" nghĩa là
 kiến trúc đó chỉ dự đoán θ_TO, hạ nguồn tính bằng quadrature. Nếu
