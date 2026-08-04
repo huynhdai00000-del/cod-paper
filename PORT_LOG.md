@@ -1804,6 +1804,50 @@ interest is excluded by construction rather than by data.
 | 1 | NMAE denominator floor (C-9) | ground truth that barely moves | `MAE / 1e-4`, a plausible percentage | refused: an absolute error wearing a percent sign |
 | 2 | `RolloutResult.theta_bias` (O-9) | a model with **zero error** | **-2.86 to -3.88 degC** | ~0 |
 | 3 | `eol_months` (O-7) | a rollout that never reaches EOL | **0.0 months** | `None`, i.e. censored |
+| 4 | `clamp_frac_state_hi` on any **cascade** model | any batch at all — the model is irrelevant | the fraction of *initial conditions* above the ceiling, reported as a model diagnostic | the fraction of the **predicted** channel |
+
+Instance 4 was found 2026-08-04 by an anomaly rather than by the metric: FNO,
+MIONet and S-DeepONet — different parameter counts, different convergence epochs
+— reported **bit-identical** clamp series at identical epochs. For an in-cascade
+model the five gas channels come from the quadrature, which ends in
+`x0_gas + F_t - k_dis * x0_gas * t`, so they are dominated by the initial
+condition carried in from the batch; `.any(dim=-1)` then answers "did this batch
+contain a high initial gas concentration". The epochs matched because
+`train_batch` draws from a generator seeded from `training.seed`, identical
+across the matrix, so all three cells saw the same batches in the same order.
+`31_clamp_diag_provenance.py` confirms it: the three cells agree to the last bit,
+do not change when the weights are reinitialised, and equal the initial
+conditions with no model present. The monolithic cell differs and does vary.
+
+Three consequences, and the third is the one to keep in mind:
+
+1. Every "past the midpoint" verdict from `clamp_onset_table` is meaningless for a
+   cascade model — which includes COD and Ablation A, not only the baselines.
+   The series describes the order of the data.
+2. The `state_scalar_500` diagnosis (J-91) attributed 18% to the model
+   over-predicting gas concentrations. Wrong cause: it is mostly the ICs.
+3. **The clamp fix it motivated still stands.** The clamp is applied to `xp`
+   before `fast_rhs_torch`, so truncating a 1456 ppm CO2 to 500 distorts the
+   residual whatever put it there, and the two loops genuinely applied different
+   ceilings to the same quantity. What was wrong was the *reason given*, not the
+   change — and the affected fraction is the 2-4% ground truth exceedance, not
+   18%.
+
+Fixed by reporting **per state channel** as well as the aggregate, plus
+`clamp_frac_hi_predicted_theta_TO` for the one channel a cascade model is
+responsible for. Per-channel makes the defect self-evident: a channel whose
+fraction does not move between architectures is not driven by any of them.
+
+**What this adds to the check in this entry:** step 1 said "feed it the null
+case". That would not have caught this one, because there is no null input that
+makes a cascade model's gas output independent of `x0_gas`. The check that would
+have caught it is new and is now step 6:
+
+6. **Vary something the metric should depend on, and confirm it moves.**
+   Re-initialise the weights and rerun. A model diagnostic that returns the same
+   number for two different models is not measuring the model. This is the dual
+   of step 1 — step 1 varies the input to a fixed model, step 6 varies the model
+   for a fixed input — and it is cheap.
 
 Instance 1 is Form A: the floor is a legitimate denominator for a case that
 genuinely varies by 1e-4, so a floored case and a real case are indistinguishable

@@ -263,6 +263,47 @@ def ode_physics_loss(model, x0, sensors, n_col: int = 40, n_chunks: int = 5,
 
 
 @torch.no_grad()
+def _clamp_frac_per_state(xp, hi) -> dict:
+    """Clamp fractions **per state channel**, plus the aggregate.
+
+    The aggregate `(xp > hi).any(dim=-1)` is what every clamp diagnostic reported
+    until 2026-08-04, and it hid a defect that took an anomaly across three
+    architectures to expose. For an **in-cascade** model the five gas channels
+    come from the analytic quadrature, which ends in
+    `x0_gas + F_t - k_dis * x0_gas * t`, so they are dominated by the initial
+    condition carried in from the batch. `.any(dim=-1)` therefore reported a
+    property of the **data** and called it a property of the model: three
+    architectures with different parameter counts returned bit-identical clamp
+    series at identical epochs, because they saw the same seeded batch order.
+    `audit_port/scripts/31_clamp_diag_provenance.py` measures it.
+
+    Per-channel reporting makes it self-evident: a channel whose fraction does not
+    move between architectures is not being driven by any of them. The aggregate
+    is kept because the loss really does clamp on `.any`, but it is no longer the
+    only thing on the record.
+
+    `theta_TO` is broken out under its own key because in a cascade model it is
+    the **only** channel the network is responsible for, so it is the one whose
+    clamp fraction is evidence about training.
+    """
+    from cod.data.physics import STATE_NAMES_FAST
+    out = {
+        "clamp_frac_state_hi": float((xp > hi).any(dim=-1).float().mean()),
+        "clamp_frac_state_lo": float((xp < 0).any(dim=-1).float().mean()),
+        # Informational: what the retired scalar ceiling would have truncated.
+        "clamp_frac_would_hit_scalar_500": float(
+            (xp > 500).any(dim=-1).float().mean()),
+    }
+    hi_v = hi if torch.is_tensor(hi) and hi.ndim else None
+    for i, nm in enumerate(STATE_NAMES_FAST[:xp.shape[-1]]):
+        hi_i = hi_v[i] if hi_v is not None else hi
+        out[f"clamp_frac_hi_{nm}"] = float((xp[:, i] > hi_i).float().mean())
+    # The channel a cascade model actually predicts.
+    out["clamp_frac_hi_predicted_theta_TO"] = out["clamp_frac_hi_theta_TO"]
+    return out
+
+
+@torch.no_grad()
 def _clamp_diagnostics(x_pred_raw, x_pred_c, u_t, lo, hi) -> dict:
     """Fraction of samples hitting each clamp on the physics-loss path.
 
@@ -275,10 +316,13 @@ def _clamp_diagnostics(x_pred_raw, x_pred_c, u_t, lo, hi) -> dict:
     )
 
     n_tot = x_pred_raw.shape[0]
-    out = {
-        "clamp_frac_state_hi": float((x_pred_raw.detach() > hi).any(dim=-1).float().mean()),
-        "clamp_frac_state_lo": float((x_pred_raw.detach() < lo).any(dim=-1).float().mean()),
-    }
+    # Per-channel as well as aggregate: `train_v34` models are cascade models too,
+    # so their `state_hi` is dominated by the initial gas concentrations the
+    # quadrature carries through, exactly as in the shared loss. See
+    # `_clamp_frac_per_state`.
+    out = _clamp_frac_per_state(x_pred_raw.detach(), hi)
+    out["clamp_frac_state_lo"] = float(
+        (x_pred_raw.detach() < lo).any(dim=-1).float().mean())
 
     theta_TO = x_pred_c[..., 0:1]
     K = u_t[..., 0:1]
@@ -399,15 +443,7 @@ def ode_physics_loss_shared(model, predict_fn, x0, sensors, n_col: int = 60,
         # different questions and is what made FNO look uniquely pathological.
         hi_now = (torch.tensor(500.0, device=device) if legacy_scalar_clamp
                   else _c("clamp_hi_shared", STATE_CLAMP_HI_NP, device))
-        diagnostics["clamp_frac_state_hi"] = float(
-            (xp.detach() > hi_now).any(dim=-1).float().mean())
-        diagnostics["clamp_frac_state_lo"] = float(
-            (xp.detach() < 0).any(dim=-1).float().mean())
-        # Retained as an informational series: how much of the batch the old
-        # scalar ceiling would have truncated. Not the clamp in force unless
-        # `legacy_scalar_clamp`.
-        diagnostics["clamp_frac_would_hit_scalar_500"] = float(
-            (xp.detach() > 500).any(dim=-1).float().mean())
+        diagnostics.update(_clamp_frac_per_state(xp.detach(), hi_now))
     return r2c, w, wm
 
 
