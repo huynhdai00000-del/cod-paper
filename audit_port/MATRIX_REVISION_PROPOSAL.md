@@ -188,6 +188,24 @@ is what the matrix is for.
 
 ---
 
+## 6b. Measured GPU costs — the plan is scheduled on these
+
+| cell | epochs | wall (s) | s/epoch | vs COD | CPU predicted | CPU error |
+|---|---|---|---|---|---|---|
+| COD (O-5) | 11,900 | 4,911 | 0.4127 | 1.00 | 1.00 | — |
+| `cod_no_baseline` | 7,000 | 2,835 | 0.4050 | 0.98 | 1.00 | 1.0x |
+| `fno_in_cascade` | 4,700 | 1,161 | 0.2470 | 0.60 | 1.91 | **3.2x** |
+| `mionet_in_cascade` | 7,400 | 187 | 0.0253 | 0.06 | 0.16 | **2.6x** |
+| `sdeeponet_in_cascade` | 8,100 | 291 | 0.0359 | 0.09 | 1.17 | **13.4x** |
+
+COD is the most expensive cell, at 45% of the 10,800 s budget, and the budget
+binds nothing. The CPU ranking mispredicted every parallel architecture and
+inverted the order twice; S-DeepONet by 13.4x. COD is scalar- and
+sequential-heavy and gains least from a GPU, while FFT, GRU and large matmuls
+collapse. No schedule in this project is planned from a CPU measurement again.
+
+Total for ~220 runs, dominated by the search: **~60 GPU-hours**.
+
 ## 7. What this needs before it starts
 
 1. **A pre-declared analysis plan.** Which comparison answers which question,
@@ -196,6 +214,7 @@ is what the matrix is for.
 2. **The search must not be able to see the test set.** Enforced structurally.
 3. **The tier-3 supervised path needs building** — label generation, a trainer,
    and a checkpoint round-trip like every other cell.
-4. **Real GPU costs for MIONet and S-DeepONet**, in flight. The last CPU-based
-   estimate was wrong in direction for FNO, so nothing here is scheduled on a
-   local measurement.
+4. **Real GPU costs** — measured, see 6b. Done.
+
+**The analysis plan is `ANALYSIS_PLAN.md`, committed before the matrix starts so
+its timestamp predates every result.**
