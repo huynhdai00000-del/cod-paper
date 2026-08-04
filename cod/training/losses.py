@@ -311,7 +311,8 @@ def ode_physics_loss_shared(model, predict_fn, x0, sensors, n_col: int = 60,
                             n_chunks: int = 5, eps_causal: float = 0.01,
                             diagnostics: dict | None = None,
                             causal_log_space: bool = True,
-                            causal_floor: float = CAUSAL_WEIGHT_FLOOR):
+                            causal_floor: float = CAUSAL_WEIGHT_FLOOR,
+                            legacy_scalar_clamp: bool = False):
     """The residual loss used by the SHARED trainer, which is not the same loss.
 
     This is the inline body of `train_physics` (n15 cell 2 L334, n00 cell 4 L167),
@@ -360,7 +361,24 @@ def ode_physics_loss_shared(model, predict_fn, x0, sensors, n_col: int = 60,
     ], dim=1)
 
     u_t = interp_sensors(sensors, tf, T, ns)
-    xp_clamped = xp.detach().clamp(0, 500)          # scalar clamp, see (2) above
+    if legacy_scalar_clamp:
+        xp_clamped = xp.detach().clamp(0, 500)      # scalar clamp, see (2) above
+    else:
+        # Per-state ceiling, matching `ode_physics_loss`. The scalar 500 truncates
+        # states that are physically correct: measured on the frozen distribution
+        # (`audit_port/scripts/30_scalar500_clamp.py`), ground-truth c_CO reaches
+        # 819 ppm and c_CO2 1456 ppm, against their own ceilings of 3000 and 8000,
+        # and 2.33% of trajectory points have some state above 500. A model
+        # predicting those correctly had its residual formed at a state it did not
+        # predict.
+        #
+        # It also made the C-11 matrix unfair in a way that is not architectural:
+        # COD and Ablation A train under `ode_physics_loss` and its per-state
+        # vector, while every baseline trains under this loss. The baselines were
+        # getting the tighter gas clamp purely by virtue of being baselines.
+        _lo_s = _c("clamp_lo_shared", STATE_CLAMP_LO_NP, device)
+        _hi_s = _c("clamp_hi_shared", STATE_CLAMP_HI_NP, device)
+        xp_clamped = xp.detach().clamp(_lo_s, _hi_s)
     f_rhs = fast_rhs_torch(xp_clamped, u_t)
 
     res = (dxdt - f_rhs) ** 2
@@ -375,10 +393,21 @@ def ode_physics_loss_shared(model, predict_fn, x0, sensors, n_col: int = 60,
 
     if diagnostics is not None:
         diagnostics["causal_weight_min"] = wm
-        diagnostics["clamp_frac_state_scalar_500"] = float(
-            (xp.detach() > 500).any(dim=-1).float().mean())
+        # `state_hi` is the clamp actually in force, so the key matches the one
+        # `ode_physics_loss` emits and the two loops become comparable — reading
+        # a scalar-500 fraction against a per-state fraction was comparing two
+        # different questions and is what made FNO look uniquely pathological.
+        hi_now = (torch.tensor(500.0, device=device) if legacy_scalar_clamp
+                  else _c("clamp_hi_shared", STATE_CLAMP_HI_NP, device))
+        diagnostics["clamp_frac_state_hi"] = float(
+            (xp.detach() > hi_now).any(dim=-1).float().mean())
         diagnostics["clamp_frac_state_lo"] = float(
             (xp.detach() < 0).any(dim=-1).float().mean())
+        # Retained as an informational series: how much of the batch the old
+        # scalar ceiling would have truncated. Not the clamp in force unless
+        # `legacy_scalar_clamp`.
+        diagnostics["clamp_frac_would_hit_scalar_500"] = float(
+            (xp.detach() > 500).any(dim=-1).float().mean())
     return r2c, w, wm
 
 
