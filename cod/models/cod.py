@@ -92,7 +92,8 @@ class CODOperator(nn.Module):
                  p: int = 64, n_layers: int = 4, n_exp_feats: int = 12,
                  T: float = TW, x_mean=None, x_std=None,
                  theta_ss_mode: str = "true_fixed_point",
-                 legacy_V_clamp: bool = False):
+                 legacy_V_clamp: bool = False,
+                 bounded_correction: bool = False):
         super().__init__()
         if theta_ss_mode not in THETA_SS_MODES:
             raise ValueError(f"theta_ss_mode must be one of {THETA_SS_MODES}")
@@ -104,6 +105,11 @@ class CODOperator(nn.Module):
         # checkpoint cannot silently switch the kinetics back. Pass True together
         # with theta_ss_mode="formula_C" when reproducing a stored checkpoint.
         self.legacy_V_clamp = legacy_V_clamp
+        # ANALYSIS_PLAN Amendment 2. Not a buffer and not in the state dict,
+        # exactly like `theta_ss_mode`: it changes the forward map, so it
+        # belongs to the config that built the model, and a checkpoint must
+        # not be able to silently reinterpret itself under the other setting.
+        self.bounded_correction = bool(bounded_correction)
         self.state_dim = state_dim
         self.p_dim = p
         self.n_exp_feats = n_exp_feats
@@ -359,6 +365,17 @@ class CODOperator(nn.Module):
         t_exp = (1.0 - torch.exp(-t / tau)) / norm
         baseline = self._ode_baseline(x0_TO, u_sensors, t,
                                      theta_ss_grid=theta_ss_grid)
+        if self.bounded_correction:
+            # ANALYSIS_PLAN Amendment 2. `output_scale` SCALES the correction, it
+            # does not bound it: `delta_TO` is a dot product plus bias with no
+            # bounded activation, so nothing structurally caps how far the model
+            # may depart from the IEC standard. Measured on O-5, `sigma` is
+            # 19.17 degC against a realised max of 3.75 — a measurement, not a
+            # guarantee. With tanh, `|correction| <= sigma` holds by construction,
+            # which is what turns the auditability claim from empirical into
+            # structural: an operator can state in advance how far the model is
+            # permitted to move away from the standard it already trusts.
+            delta_TO = torch.tanh(delta_TO)
         theta_TO_pred = baseline + t_exp * self.output_scale * delta_TO
 
         # INTENDED: the cascade is one-way. Detaching here is what makes

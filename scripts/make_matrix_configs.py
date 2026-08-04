@@ -74,6 +74,20 @@ CELLS = {
                  "Same trunk departure as above.",
         "sdeeponet": {"cell": "gru", "trunk_layers": 6},
     },
+    "cod_bounded_correction": {
+        "kind": "cod",
+        "notes": "ANALYSIS_PLAN Amendment 2. COD with tanh on the neural "
+                 "correction, so |correction| <= sigma holds BY CONSTRUCTION "
+                 "rather than empirically. NOT a factorial cell -- reported "
+                 "separately against COD on the same seeds. Adding it to the "
+                 "factorial would double the matrix to test a design "
+                 "refinement rather than the hypothesis.",
+        "branch": {"layers": 4, "width": 128, "arch": "modified_mlp"},
+        "trunk": {"layers": 3, "width": 128, "arch": "modified_mlp"},
+        "basis_dim": 64,
+        "steady_state": "true_fixed_point",
+        "bounded_correction": True,
+    },
     "cod_no_baseline": {
         "kind": "cod_no_baseline",
         "notes": "DECISIONS O-12 / N-8, Ablation A. COD with the analytic "
@@ -93,6 +107,7 @@ CELLS = {
 #: and O-12 is a one-variable test.
 TRAINING_OVERRIDES = {
     "cod_no_baseline": {"loop": "train_v34"},
+    "cod_bounded_correction": {"loop": "train_v34"},
 }
 
 

@@ -139,6 +139,9 @@ def build_model(cfg, x_mean, x_std, device):
             n_layers=n_layers, n_exp_feats=n_exp_feats, T=T,
             x_mean=x_mean, x_std=x_std,
             theta_ss_mode=m.get("steady_state", "true_fixed_point"),
+            # ANALYSIS_PLAN Amendment 2: tanh on the correction, so
+            # |correction| <= sigma structurally rather than empirically.
+            bounded_correction=bool(m.get("bounded_correction", False)),
         )
         return model, cod_predict
 
