@@ -64,7 +64,7 @@ from cod.data.physics import (  # noqa: E402
 )
 from cod.data.realistic import RealisticParams  # noqa: E402
 from cod.data.steady_state import formula_A  # noqa: E402
-from cod.models.cod import CODOperator  # noqa: E402
+from cod.models.cod import CODNoBaseline, CODOperator  # noqa: E402
 from cod.models.daily_mean import jensen_gap_from_trajectory  # noqa: E402
 from cod.models.monolithic import MonolithicFair, MonolithicMultiHead  # noqa: E402
 
@@ -128,9 +128,15 @@ def load_cod_checkpoint(path: Path, device):
             f"{path} has no `model_state_dict`. Checkpoints written before "
             "run.py persisted weights do not exist — the model was discarded on "
             "exit — so there is nothing to score and the run has to be repeated.")
-    if ck.get("model_kind", "cod") != "cod":
-        raise ValueError(f"{path} holds a {ck['model_kind']!r} model, not cod.")
-    model = CODOperator(
+    kind = ck.get("model_kind", "cod")
+    if kind not in ("cod", "cod_no_baseline"):
+        raise ValueError(f"{path} holds a {kind!r} model; this loader handles "
+                         "the COD family. The other C-11 architectures are "
+                         "loaded through run.py's builder.")
+    # Ablation A differs from COD only in `_ode_baseline`, so it loads through
+    # the same constructor with the same state dict.
+    cls = CODNoBaseline if kind == "cod_no_baseline" else CODOperator
+    model = cls(
         state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS, d_h=128, p=64,
         n_layers=4, n_exp_feats=12, T=TW, x_mean=np.zeros(6), x_std=np.ones(6),
         theta_ss_mode=ck.get("theta_ss_mode", "true_fixed_point"),
@@ -138,6 +144,7 @@ def load_cod_checkpoint(path: Path, device):
     model.load_state_dict(ck["model_state_dict"], strict=True)
     model.eval()
     meta = {
+        "model_kind": ck.get("model_kind", "cod"),
         "converged": ck.get("converged"),
         "stop_reason": ck.get("stop_reason"),
         "distribution_hash": ck.get("distribution_hash"),
@@ -242,8 +249,15 @@ def live_mask(r):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--checkpoint", type=Path,
-                    help="model.pt from scripts/run.py (the fix-7 model).")
+    ap.add_argument("--checkpoint", type=Path, nargs="+",
+                    help="One or more model.pt from scripts/run.py. Several are "
+                         "scored into the same tables, which is what the O-12 "
+                         "comparison needs: Ablation A is only interpretable "
+                         "beside COD on the same evaluation set, and building "
+                         "two reports would invite comparing rows that were "
+                         "scored on different draws.")
+    ap.add_argument("--labels", nargs="+", default=None,
+                    help="Display names, one per checkpoint.")
     ap.add_argument("--v57-checkpoints", action="store_true",
                     help="Also score the three v57-era checkpoints.")
     ap.add_argument("--exact", action="store_true",
@@ -293,13 +307,23 @@ def main() -> int:
         models.append((lbl, "n/a", "`16_bias_diagnosis.ExactModel`",
                        load_exact(args.smooth_test), {}))
     if args.checkpoint:
-        m, meta = load_cod_checkpoint(args.checkpoint, device)
-        if meta.get("converged") is False:
-            print(f"[warn] this checkpoint did NOT converge "
-                  f"(stop_reason={meta.get('stop_reason')!r}). Per the repo rule "
-                  "its swing numbers describe a non-converged model.")
-        models.append((f"COD fix-7 (seed {meta.get('seed')})", "yes",
-                       f"`{args.checkpoint.name}`", m, meta))
+        for i, ckpt in enumerate(args.checkpoint):
+            m, meta = load_cod_checkpoint(ckpt, device)
+            if meta.get("converged") is False:
+                print(f"[warn] {ckpt.name} did NOT converge "
+                      f"(stop_reason={meta.get('stop_reason')!r}). Per the repo "
+                      "rule its swing numbers describe a non-converged model.")
+            kind = (meta.get("model_kind") or "cod")
+            # Whether the analytic baseline H is present is the one variable
+            # O-12 changes, so it is read from the checkpoint rather than typed
+            # into a label that could disagree with the weights.
+            has_H = "no" if kind == "cod_no_baseline" else "yes"
+            if args.labels and i < len(args.labels):
+                label = args.labels[i]
+            else:
+                label = f"{kind} (seed {meta.get('seed')})"
+            models.append((label, has_H, f"`{ckpt.parent.name}/{ckpt.name}`",
+                           m, meta))
     if args.v57_checkpoints:
         models.extend(build_v57_models(device))
 

@@ -12,16 +12,21 @@ Half peak-to-peak of the hot-spot trajectory. Live cases are time-varying with a
 
 | model | analytic baseline H | checkpoint | n live | median swing ratio | under-predicting | median thermal MAE degC | median thermal bias degC |
 |---|---|---|---|---|---|---|---|
-| COD fix-7 (seed 1) | yes | `model.pt` | 93 | **1.0148** | 33% | 0.3837 | -0.2360 |
+| Ablation A (no baseline H) | no | `o12/model.pt` | 93 | **1.0830** | 33% | 2.2822 | +1.0300 |
+| COD (baseline H) | yes | `o5/model.pt` | 93 | **1.0148** | 33% | 0.3837 | -0.2360 |
 
 ## 2. Full distribution of the swing ratio, per model
 
 | model | population | n | median ratio | Q1 | Q3 | p10 | p90 | median error degC |
 |---|---|---|---|---|---|---|---|---|
-| COD fix-7 (seed 1) | all cases | 100 | **1.0163** | 0.9884 | 1.0340 | 0.9677 | 1.0571 | +0.2033 |
-| COD fix-7 (seed 1) | time-varying | 93 | **1.0148** | 0.9880 | 1.0321 | 0.9675 | 1.0553 | +0.1917 |
-| COD fix-7 (seed 1) | time-varying, swing > 1 degC | 93 | **1.0148** | 0.9880 | 1.0321 | 0.9675 | 1.0553 | +0.1917 |
-| COD fix-7 (seed 1) | constant K | 7 | **1.0391** | 1.0317 | 1.0513 | 1.0060 | 1.0845 | +0.2150 |
+| Ablation A (no baseline H) | all cases | 100 | **1.0854** | 0.9706 | 1.2067 | 0.8848 | 1.2938 | +0.7984 |
+| Ablation A (no baseline H) | time-varying | 93 | **1.0830** | 0.9714 | 1.2064 | 0.8854 | 1.2948 | +0.9078 |
+| Ablation A (no baseline H) | time-varying, swing > 1 degC | 93 | **1.0830** | 0.9714 | 1.2064 | 0.8854 | 1.2948 | +0.9078 |
+| Ablation A (no baseline H) | constant K | 7 | **1.0958** | 0.9482 | 1.2129 | 0.7696 | 1.2224 | +0.3761 |
+| COD (baseline H) | all cases | 100 | **1.0163** | 0.9884 | 1.0340 | 0.9677 | 1.0571 | +0.2033 |
+| COD (baseline H) | time-varying | 93 | **1.0148** | 0.9880 | 1.0321 | 0.9675 | 1.0553 | +0.1917 |
+| COD (baseline H) | time-varying, swing > 1 degC | 93 | **1.0148** | 0.9880 | 1.0321 | 0.9675 | 1.0553 | +0.1917 |
+| COD (baseline H) | constant K | 7 | **1.0391** | 1.0317 | 1.0513 | 1.0060 | 1.0845 | +0.2150 |
 
 ## 3. Stratified by true swing — does it worsen where it matters?
 
@@ -29,11 +34,16 @@ Half peak-to-peak of the hot-spot trajectory. Live cases are time-varying with a
 
 | model | true swing band | n | median ratio | median error degC | median MAE degC | tracking |
 |---|---|---|---|---|---|---|
-| COD fix-7 (seed 1) | 1-5 degC | 7 | 1.0335 | +0.1368 | 0.2496 | yes |
-| COD fix-7 (seed 1) | 5-10 degC | 19 | 0.9813 | -0.1010 | 0.3099 | yes |
-| COD fix-7 (seed 1) | 10-15 degC | 26 | 1.0033 | +0.0430 | 0.2985 | yes |
-| COD fix-7 (seed 1) | 15-25 degC | 28 | 1.0163 | +0.2925 | 0.4775 | yes |
-| COD fix-7 (seed 1) | 25-200 degC | 13 | 1.0230 | +0.6723 | 0.7857 | yes |
+| Ablation A (no baseline H) | 1-5 degC | 7 | 1.0942 | +0.4557 | 0.9382 | yes |
+| Ablation A (no baseline H) | 5-10 degC | 19 | 1.1006 | +0.9535 | 1.7545 | yes |
+| Ablation A (no baseline H) | 10-15 degC | 26 | 1.0880 | +1.0594 | 1.8985 | yes |
+| Ablation A (no baseline H) | 15-25 degC | 28 | 1.0327 | +0.6238 | 2.6052 | yes |
+| Ablation A (no baseline H) | 25-200 degC | 13 | 1.0207 | +0.6076 | 3.4939 | yes |
+| COD (baseline H) | 1-5 degC | 7 | 1.0335 | +0.1368 | 0.2496 | yes |
+| COD (baseline H) | 5-10 degC | 19 | 0.9813 | -0.1010 | 0.3099 | yes |
+| COD (baseline H) | 10-15 degC | 26 | 1.0033 | +0.0430 | 0.2985 | yes |
+| COD (baseline H) | 15-25 degC | 28 | 1.0163 | +0.2925 | 0.4775 | yes |
+| COD (baseline H) | 25-200 degC | 13 | 1.0230 | +0.6723 | 0.7857 | yes |
 
 ### 3b. By sampler family
 
@@ -41,13 +51,20 @@ Which load families the result is actually about. `family` is the day-pattern th
 
 | model | family | n | n live | median true swing degC | median ratio | median MAE degC |
 |---|---|---|---|---|---|---|
-| COD fix-7 (seed 1) | `base_load` | 16 | 16 | 11.19 | 1.0054 | 0.3885 |
-| COD fix-7 (seed 1) | `daily` | 26 | 26 | 16.90 | 1.0033 | 0.4135 |
-| COD fix-7 (seed 1) | `evening_peak` | 17 | 17 | 13.94 | 1.0207 | 0.2929 |
-| COD fix-7 (seed 1) | `multi_step` | 8 | 8 | 14.12 | 1.0027 | 0.3766 |
-| COD fix-7 (seed 1) | `overload_spike` | 14 | 7 | 26.11 | 1.0827 | 1.2299 |
-| COD fix-7 (seed 1) | `ramp` | 7 | 7 | 6.66 | 1.0334 | 0.4055 |
-| COD fix-7 (seed 1) | `shift_change` | 12 | 12 | 10.02 | 1.0122 | 0.2922 |
+| Ablation A (no baseline H) | `base_load` | 16 | 16 | 11.19 | 1.0549 | 1.4749 |
+| Ablation A (no baseline H) | `daily` | 26 | 26 | 16.90 | 1.0901 | 2.5356 |
+| Ablation A (no baseline H) | `evening_peak` | 17 | 17 | 13.94 | 1.0532 | 2.2851 |
+| Ablation A (no baseline H) | `multi_step` | 8 | 8 | 14.12 | 1.1759 | 2.4411 |
+| Ablation A (no baseline H) | `overload_spike` | 14 | 7 | 26.11 | 0.8976 | 3.4939 |
+| Ablation A (no baseline H) | `ramp` | 7 | 7 | 6.66 | 1.1006 | 1.2032 |
+| Ablation A (no baseline H) | `shift_change` | 12 | 12 | 10.02 | 1.0656 | 2.1124 |
+| COD (baseline H) | `base_load` | 16 | 16 | 11.19 | 1.0054 | 0.3885 |
+| COD (baseline H) | `daily` | 26 | 26 | 16.90 | 1.0033 | 0.4135 |
+| COD (baseline H) | `evening_peak` | 17 | 17 | 13.94 | 1.0207 | 0.2929 |
+| COD (baseline H) | `multi_step` | 8 | 8 | 14.12 | 1.0027 | 0.3766 |
+| COD (baseline H) | `overload_spike` | 14 | 7 | 26.11 | 1.0827 | 1.2299 |
+| COD (baseline H) | `ramp` | 7 | 7 | 6.66 | 1.0334 | 0.4055 |
+| COD (baseline H) | `shift_change` | 12 | 12 | 10.02 | 1.0122 | 0.2922 |
 
 ## 4. The consequence that MAE hides
 
@@ -55,18 +72,25 @@ The reason to measure the swing rather than the error: the Jensen gap carried by
 
 | model | state | median true gap | median predicted gap | median ratio | delta gap, ratio of medians |
 |---|---|---|---|---|---|
-| COD fix-7 (seed 1) | `c_H2` | 1.4126 | 1.4067 | 1.0070 | -0.42% |
-| COD fix-7 (seed 1) | `c_C2H2` | 2.2037 | 2.2661 | 1.0144 | +2.83% |
-| COD fix-7 (seed 1) | `c_C2H4` | 1.6403 | 1.6575 | 1.0098 | +1.04% |
-| COD fix-7 (seed 1) | `c_CO` | 1.2329 | 1.2414 | 1.0045 | +0.69% |
-| COD fix-7 (seed 1) | `c_CO2` | 1.1687 | 1.1755 | 1.0034 | +0.58% |
-| COD fix-7 (seed 1) | `DP` | 1.5176 | 1.5253 | 1.0083 | +0.51% |
+| Ablation A (no baseline H) | `c_H2` | 1.4126 | 1.4733 | 1.0147 | +4.30% |
+| Ablation A (no baseline H) | `c_C2H2` | 2.2037 | 2.3570 | 1.0321 | +6.96% |
+| Ablation A (no baseline H) | `c_C2H4` | 1.6403 | 1.7527 | 1.0211 | +6.85% |
+| Ablation A (no baseline H) | `c_CO` | 1.2329 | 1.2755 | 1.0099 | +3.45% |
+| Ablation A (no baseline H) | `c_CO2` | 1.1687 | 1.1950 | 1.0072 | +2.25% |
+| Ablation A (no baseline H) | `DP` | 1.5176 | 1.6023 | 1.0178 | +5.58% |
+| COD (baseline H) | `c_H2` | 1.4126 | 1.4067 | 1.0070 | -0.42% |
+| COD (baseline H) | `c_C2H2` | 2.2037 | 2.2661 | 1.0144 | +2.83% |
+| COD (baseline H) | `c_C2H4` | 1.6403 | 1.6575 | 1.0098 | +1.04% |
+| COD (baseline H) | `c_CO` | 1.2329 | 1.2414 | 1.0045 | +0.69% |
+| COD (baseline H) | `c_CO2` | 1.1687 | 1.1755 | 1.0034 | +0.58% |
+| COD (baseline H) | `DP` | 1.5176 | 1.5253 | 1.0083 | +0.51% |
 
 Thermal MAE over the live cases, for context:
 
 | model | median MAE degC | p90 MAE degC | median bias degC |
 |---|---|---|---|
-| COD fix-7 (seed 1) | 0.3837 | 0.9292 | -0.2360 |
+| Ablation A (no baseline H) | 2.2822 | 6.5462 | +1.0300 |
+| COD (baseline H) | 0.3837 | 0.9292 | -0.2360 |
 
 MAE and peak-to-trough range are not the same measurement, and only one of them is what the convexity argument depends on. Reading the two tables together is the point: a model can be close in MAE and still lose gap, and the gap column is the one the method's claim rests on.
 

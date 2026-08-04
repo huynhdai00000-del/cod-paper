@@ -855,7 +855,49 @@ chỉ vị trí là rải theo ngày — nên uplift 1,378 chưa bao giờ áp c
 Hai lý do phụ: cửa sổ 12 h chỉ thấy nửa chu kỳ ở pha ngẫu nhiên, và những cửa sổ
 không chứa sự kiện nào giờ là một phần thật của quần thể.
 
-**N-8. Surrogate KHÔNG làm trơn biên độ.** Tỷ số biên độ dự đoán trên thật là
+**N-8 — DỰ ĐOÁN CƠ CHẾ BỊ BÁC 2026-08-04. Không được viết vào bài.**
+Ablation A đã train xong trên phân phối fix-7 (`artifacts/o12/`,
+`converged_plateau` ở 7.000 epoch / 2.835 s, hash `fc4cb76c3b32ec17`), một biến
+đổi duy nhất, cùng mạng cùng trainer cùng ngân sách với COD. Chấm bằng
+`18_swing_fidelity.py` trên cùng tập T1, hai model trong cùng một bảng:
+
+| | tỷ số biên độ (trung vị) | thiếu biên độ | MAE nhiệt |
+|---|---|---|---|
+| COD (có baseline H) | 1,0148 | 33% | 0,384 °C |
+| **Ablation A (bỏ baseline H)** | **1,0830** | **33%** | **2,282 °C** |
+
+Phân tầng theo biên độ, Ablation A: 1,094 / 1,101 / 1,088 / 1,033 / 1,021 —
+**vượt 1 ở mọi dải**, không dải nào làm trơn.
+
+Khoảng cách Jensen dọc quỹ đạo, Ablation A so với sự thật: **+2,25% đến +6,96%
+trên cả sáu state**. Không mất, mà thừa.
+
+**Dự đoán của N-8 là "kiến trúc không có baseline giải tích phải làm trơn". Đo
+được điều ngược lại.** Bỏ baseline làm MAE nhiệt xấu đi **6 lần**, nhưng **không**
+làm mất khoảng cách Jensen và **không** làm trơn chu kỳ.
+
+**Hệ quả: lập luận "delta-learning trên nền giải tích bảo toàn khoảng cách Jensen
+trước spectral bias" KHÔNG được viết vào bài.** Đây là phép thử sạch nhất có thể
+có — model đã hội tụ, một biến, cùng pipeline — và nó trả lời không. N-9 để mở
+khả năng này ("nếu vẫn không hội tụ dưới ngân sách công bằng thì báo cáo đó là
+kết quả hội tụ và bỏ tuyên bố spectral bias"); nay model hội tụ và tuyên bố vẫn
+phải bỏ, vì lý do khác: không có hiện tượng làm trơn để giải thích.
+
+**Đọc thêm, quan trọng.** Tỷ số 1,083 của Ablation A **không** phải bằng chứng
+nó giữ chu kỳ tốt hơn COD. Chính N-9 đã ghi: sai số độc lập không thiên lệch làm
+**tăng** biên độ đỉnh-đáy đo được, vì max trừ min của một tín hiệu nhiễu thì rộng
+ra. Ablation A có MAE gấp 6 lần, nên +8% biên độ nhiều khả năng là nhiễu nở ra
+chứ không phải bám chu kỳ. Đó là lý do phải đọc bảng biên độ **cùng** MAE, đúng
+như giao thức C-11 yêu cầu.
+
+**Điều còn đứng vững, và đủ mạnh để vào bài:** bỏ baseline giải tích làm sai số
+nhiệt xấu đi 6 lần với **một biến duy nhất thay đổi**. Đó là kết quả sạch về
+**độ chính xác**, chỉ không phải kết quả về **cơ chế**. Viết đúng như vậy.
+
+**Cảnh báo:** n = 1 seed. Bảy seed theo runbook mới sẽ cho dải; tỷ số 6 lần khó
+đảo ngược nhưng chưa đo.
+
+**N-8 (nội dung gốc). Surrogate KHÔNG làm trơn biên độ.** Tỷ số biên độ dự đoán trên thật là
 1,0038 (trung vị, n=100), hơi vượt chứ không thiếu. Phân tầng bác bỏ spectral
 bias: tỷ số 1,0176 ở dải 10-15 °C, 1,0100 ở dải 25-200 °C, tức tiến về 1 khi
 biên độ lớn nhất, ngược chiều với spectral bias. Khoảng cách Jensen dọc quỹ đạo

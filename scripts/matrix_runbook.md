@@ -3,46 +3,37 @@
 What to run, in what order, what to check after each, and how the results
 combine. Everything here runs on Colab; nothing in it runs locally.
 
-The budget is **10,800 s (3 h) per run**, proposed with reasoning in DECISIONS
-C-11 and **not yet confirmed** — step 0 is what confirms it. Do not start step 2
-until step 0 has passed, because a budget that binds invalidates every run made
-under it.
+The budget is **10,800 s (3 h) per run** and is **not binding** — measured, see
+step 0. Raise it freely if a cell needs more; nothing in the matrix is
+compute-constrained.
 
 ---
 
-## 0. Pilot: one FNO seed, before committing anything
+## 0. Budget: settled by measurement, not by estimate
 
-FNO is the most expensive cell per step (1.91x COD on the local ranking), so at a
-shared budget it gets the fewest epochs — about 14,000 against the 11,900 COD
-needed to converge. It is therefore the cell most likely to be stopped by the
-budget rather than by convergence, and a baseline stopped by the budget says
-nothing about its architecture.
+Two real T4 runs, both `converged_plateau`:
 
-```bash
-!git clone https://github.com/huynhdai00000-del/cod-paper.git
-%cd cod-paper
-!pip install -e . --quiet
+| cell | epochs | wall (s) | % of 10,800 | s/epoch |
+|---|---|---|---|---|
+| `cod_no_baseline` | 7,000 | 2,835 | 26% | 0.405 |
+| `fno_in_cascade` | 4,700 | 1,161 | 11% | 0.247 |
+| COD (O-5, reference) | 11,900 | 4,911 | 45% | 0.413 |
 
-!python scripts/run.py --config configs/matrix/fno_in_cascade.yaml \
-    --freeze-hash fc4cb76c3b32ec17 \
-    --max-wall-seconds 10800 \
-    --out /content/drive/MyDrive/cod_matrix --tag pilot
-```
+**The budget does not bind.** The worst case so far uses 45% of it.
 
-**Check, and this is the whole point of the pilot:**
+**And the CPU-based cost ranking that motivated the original pilot was wrong in
+direction.** It predicted FNO at 1.79-1.91x COD per step; on a T4 FNO is
+**0.60x** COD (0.247 against 0.413). The FFT parallelises far better on GPU than
+on CPU, and the local ranking inverted the order. That estimate is left in
+DECISIONS C-11 with this correction attached rather than quietly deleted: the
+lesson is that a CPU cost ranking does not transfer to GPU even ordinally, so
+`s/epoch` from a real run is the only number to plan with.
 
-| field in `run.json` | what it must say |
-|---|---|
-| `outcome.stop_reason` | `converged_plateau` |
-| `outcome.converged` | `true` |
-| `outcome.wall_seconds` | comfortably under 10800, not 10799 |
-| `config.distribution_hash` | `fc4cb76c3b32ec17` |
-| `evaluation.tier_source` | `realistic_sampler` |
-
-If `stop_reason` is `wall_clock_budget`, **stop**. Raise the budget, record the
-new figure in DECISIONS C-11, and restart from here. Three hours spent here
-avoids discarding roughly 120 GPU-hours of matrix runs made under a budget that
-binds.
+Still unmeasured on GPU: MIONet and S-DeepONet. Both are expected cheap (MIONet
+was the cheapest on CPU by a wide margin; S-DeepONet is ~1.2x COD after the
+branch caching), but expected is not measured. Check `stop_reason` on the first
+seed of each; if it says `wall_clock_budget`, raise the budget and rerun that
+cell only — the others are unaffected because the budget is per run.
 
 ---
 
@@ -65,12 +56,21 @@ at the end is complete even when something breaks.
 
 ## 2. The matrix
 
-Six cells x 5 seeds = 30 runs, plus Ablation A x 5 = 35 runs, at 3 h =
-105 GPU-hours. C-11 assumes several Colab
+Seven configs x **7 seeds** = 49 runs. At the measured 1,161-2,835 s per run
+that is roughly **25-35 GPU-hours**, not the 105 estimated when a run was
+assumed to take the full 3 h.
+
+**Why 7 and not 5.** Wall clock stopped being the constraint, and the reason to
+want more seeds is concrete rather than theoretical: N-11 is the case where a
+single-seed median of 13.18 degC looked solid and the pooled figure across six
+seeds was 11.63, outside the entire between-seed range. Seven is odd, so the
+median is an actual run rather than an interpolation between two; it is enough
+to quote a range instead of a mean; and past about ten the return falls off
+faster than the cost. C-11 assumes several Colab
 accounts writing into one Drive directory, so the order below is by *priority*,
 not by dependency — any account can take any line.
 
-Seeds are `1..5`, set with `training.seed`. `run.py` refuses to overwrite an
+Seeds are `1..7`, set with `training.seed`. `run.py` refuses to overwrite an
 existing run directory, so a repeated line is an error rather than a silent
 clobber.
 
@@ -79,7 +79,7 @@ for CFG in fno_in_cascade fno_monolithic \
            mionet_in_cascade mionet_monolithic \
            sdeeponet_in_cascade sdeeponet_monolithic \
            cod_no_baseline; do
-  for SEED in 1 2 3 4 5; do
+  for SEED in 1 2 3 4 5 6 7; do
     python scripts/run.py --config configs/matrix/$CFG.yaml \
         --freeze-hash fc4cb76c3b32ec17 \
         --max-wall-seconds 10800 \
@@ -101,7 +101,7 @@ one cell.
    adaptation (PORT_LOG J-90), so its result needs the most careful reading.
 4. `cod_no_baseline` — DECISIONS O-12, Ablation A. Not part of the six-cell
    matrix and not paired with anything: its comparison is against **COD itself**
-   on the same seeds. One seed is enough to be informative, five to be
+   on the same seeds. One seed is enough to be informative, seven to be
    reportable. It uses `loop: train_v34`, COD's own trainer, because a different
    trainer would be a second variable.
 
@@ -161,6 +161,6 @@ was missing and the architecture is not at fault. Across architectures the
 comparison is confounded by the adaptations recorded in PORT_LOG J-90 — most
 severely for S-DeepONet, whose trunk was moved from spatial coordinates to time.
 
-**Seeds are reported as a distribution, not a mean.** Five seeds, and a
+**Seeds are reported as a distribution, not a mean.** Seven seeds, and a
 non-converged seed is reported as non-converged rather than dropped; dropping it
 would select for the seeds that happened to work.
