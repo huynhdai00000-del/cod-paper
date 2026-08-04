@@ -266,3 +266,99 @@ not the cost.
 
 Estimated total, ~220 runs dominated by the search: **~60 GPU-hours**, a few hours
 of wall clock across 20 accounts.
+
+---
+
+# Amendments
+
+Appended, never edited in place, per the rule at the top of this file. Each is
+dated and carries its reason. Both amendments below were committed **before any
+factorial cell ran** and before the rollout metric was computed for any cell.
+
+---
+
+## Amendment 1 — 2026-08-04. The primary metric moves to the rollout.
+
+**What changes.** The primary hypothesis was: within an architecture, in-cascade
+achieves lower absolute gas MAE in ppm over the 12 h window than monolithic. The
+primary metric becomes **gas concentration error in ppm at the end of a 2-year
+rollout**, scenarios K = 0.95 and K = 1.10, scored against IEC 60599 thresholds.
+The 12 h gas MAE is **demoted to secondary**.
+
+**Why the original was unusable, and it is not a close call.** C-9 established
+that gas variation over a 12 h window is three to five orders of magnitude below
+DGA resolution. The completed runs confirm it: MIONet `c_C2H2` MAE 8.6e-05 ppm
+and FNO 2.2e-04 ppm, against a 35 ppm IEC attention level — 2.5e-6 of it. Under
+§3's two bars, **every architecture is pre-destined to return "statistically
+separable, operationally negligible"**. That is a weak conclusion reached
+expensively, and worse, it would read as a null result when it is an artifact of
+the window length.
+
+**Why the rollout is the right test, mechanistically and not merely because it is
+longer.** Gases obey `dc/dt = k_gen V_arr(theta) - k_dis c`, so they relax toward
+an equilibrium set by temperature. Therefore:
+
+> **An in-cascade model converges to the correct equilibrium by construction,
+> because it integrates the right quadrature. A monolithic model has no such
+> constraint, and a wrong equilibrium persists indefinitely.**
+
+That is a **structural claim about behaviour at long horizon**, not an accuracy
+claim at short horizon, and it is what the cascade is actually for. A 12 h window
+cannot see it because nothing has had time to accumulate. It is also the
+operationally correct quantity: DGA diagnosis reads absolute ppm against fixed
+thresholds, so a persistent equilibrium offset is precisely what produces a false
+alarm or a missed detection.
+
+**Restated primary (still four tests, one per architecture).** Main effect of the
+cascade on **end-of-rollout gas ppm**, pooled across both baseline levels.
+Everything else in §1-§5 — the 2x confound control applied within a baseline
+level, the two bars in §3, the seed summary in §4, the falsification conditions
+in §5 — applies unchanged with the metric substituted.
+
+**The 12 h gas MAE stays, demoted, with its reason attached** so its negligibility
+reads as expected rather than as a finding: it is what the training loss targets,
+so a model that is bad at it will be bad at rollout, and it is the honest place to
+show that the short-horizon differences are real but operationally irrelevant.
+
+**Cost.** 4.6 GPU-hours. The reference rollout and the cyclic burn-ins are
+model-independent, so they are computed once per scenario and reused across all
+112 cell-seeds; only the model forward passes scale with the matrix.
+
+---
+
+## Amendment 2 — 2026-08-04. A bounded-correction COD variant.
+
+**What changes.** A variant of COD is added in which the network's correction
+passes through `tanh` before the output scale:
+
+    theta_TO = H(t) + phi(t) * sigma * tanh(net(t))       instead of
+    theta_TO = H(t) + phi(t) * sigma * net(t)
+
+It is reported **separately, against COD on the same seeds** — *not* as a fifth
+factorial variable. Adding it to the factorial would double the matrix to test a
+design refinement rather than the hypothesis.
+
+**Why.** The engineering claim the analytic baseline supports is auditability, and
+one word in it does not currently survive measurement. `sigma` **scales** the
+correction; it does not **bound** it, because `net(t)` is a dot product plus bias
+with no bounded activation. Measured on O-5: `sigma` = 19.17 degC, realised
+correction median 0.48, p95 2.14, max 3.75 degC against a 17.11 degC signal —
+2.81% of signal. Those are measurements, not guarantees, and nothing structurally
+caps how far the model may depart from the standard.
+
+With `tanh`, `|correction| <= sigma` holds by construction. For an
+asset-management claim, a structural guarantee is worth more than a small
+accuracy difference: it lets an operator state in advance how far the model is
+permitted to move away from the IEC standard it already trusts.
+
+**What is reported either way.** If the accuracy cost is negligible, the paper
+gets a structural guarantee instead of a measurement. **If it costs real
+accuracy, that trade is itself the finding and is reported as such** — not
+buried, and not used to quietly drop the variant.
+
+**Unaffected by this amendment**, because both are already structural and neither
+depends on boundedness: the model degrades to the IEC standard exactly when the
+network output goes to zero, and it inherits the standard's validated parameters.
+
+**Cost.** 7 seeds of one extra COD-family cell, ~9.5 GPU-hours at COD's measured
+4,911 s per run.
