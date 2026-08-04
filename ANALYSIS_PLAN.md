@@ -195,6 +195,31 @@ C-11 requires one search per baseline at the main method's budget, reported.
   baseline in the document despite requiring no GPU.
 * **Tier 2** — PINN per-profile (amortisation), RBA-PINN (nearest in-domain
   competitor). Both reported against COD, neither part of the cascade test.
+
+  **How the PINN comparison is read, declared now because it is easy to get
+  backwards.** A converged per-profile PINN is the *specialised gold standard*
+  for its own profile: it fits one `(x0, K, theta_a)` and is scored on that same
+  profile, so it should be **more** accurate than an operator that must be right
+  about a whole distribution at similar capacity. Therefore:
+
+  - The supported claim is **amortised cost at comparable accuracy**, never
+    "we beat the PINN".
+  - **If COD beats a converged per-profile PINN on that PINN's own profile, the
+    finding is that the PINN is undertrained** — the run is investigated, not
+    reported as a win. This is pre-declared so that a favourable-looking result
+    cannot be quietly accepted.
+  - The amortisation ledger is `N x PINN training` against
+    `operator training once + N x forward pass`, all wall-clock measured and
+    recorded in `run.json`. The audit found the manuscript's timing claims had no
+    artifact; these have one.
+  - The PINN's budget is **not** capped to the operator's. It trains to its own
+    plateau, because capping the baseline would rig exactly the number this
+    baseline exists to produce.
+  - Fairness parity, all given to the PINN: causal weighting (Wang et al. 2024
+    Eq. 3.2, the same `causal_weights` the operator uses), the same hard IC
+    ansatz, the same per-state output scaling, the same convergence criterion.
+  - No labels: the PINN sees the ODE residual and the IC, never the RK45
+    solution, so scoring it on the profile it trained on leaks nothing.
 * **Tier 3** — LSTM/GRU, supervised. Different paradigm; a reference point, not a
   controlled comparison. Its training needs RK45 labels the physics pipeline never
   generated, so it gets its own wiring and its own round-trip check.
