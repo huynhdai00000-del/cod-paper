@@ -276,7 +276,14 @@ def main() -> int:
     ap.add_argument("--n-cases", type=int, default=100)
     ap.add_argument("--seed", type=int, default=999)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--out", type=Path, default=OUT,
+                    help="Where to write the report. Defaults to a FIXED path, "
+                         "which is correct for a one-off but silently destroys "
+                         "results when this is looped: 15 cells x 7 seeds would "
+                         "overwrite one file 105 times and keep the last. Pass a "
+                         "per-run path in a sweep.")
     args = ap.parse_args()
+    out_path = args.out
 
     if not args.checkpoint and not args.v57_checkpoints and not args.exact:
         ap.error("give --checkpoint, --exact for the self-test, or "
@@ -546,8 +553,9 @@ def main() -> int:
       "models scored on different distributions; only rows sharing an evaluation "
       "set can be read against each other.\n")
 
-    OUT.write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(f"Wrote {OUT}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(f"Wrote {out_path}")
     if failures:
         print("\nFAIL: " + "; ".join(failures))
         return 1

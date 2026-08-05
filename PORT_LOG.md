@@ -1624,6 +1624,67 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-93 `--seed`, and the loop variable that changed only the directory name
+
+The matrix runbook looped `for SEED in 1 2 3 4 5 6 7` and passed `--tag s$SEED`.
+`--tag` names the output directory. It does not touch training. `run.py` read the
+seed from `training.seed` in the config, which is the same value for every cell,
+so **all seven runs would have been the same run**, written to seven differently
+named directories. The `--overwrite` guard could not catch it: the tags differ, so
+the paths differ, so nothing collides. Seven directories, seven `run.json` files,
+seven complete-looking results, one experiment. The seed-variance column of every
+matrix table would have been a column of zeros presented as agreement.
+
+This is the **fifth** instance of the silent sentinel (J-88): a diagnostic that
+cannot distinguish "seven seeds agreed" from "one seed ran seven times".
+
+**The fix, and why proving it needed two tests rather than one.** Added
+`run.py --seed`. A seed override has two call sites, and reaching only the first
+is the failure mode that looks correct in `run.json`:
+
+1. `torch.manual_seed` / `np.random.seed` — weight initialisation;
+2. `build_trainer(..., seed=seed)` — the trainer's own `torch.Generator`, which
+   draws batch order.
+
+Wire up only (1) and every seed still draws **identical batches in identical
+order**; `run.json` faithfully records seven different seeds, and the variance
+reported is initialisation variance alone, understating the real thing. So the
+end-to-end run cannot prove it: two full runs differ from step 0 whether or not
+(2) is wired, because differing initial weights alone give a differing initial
+loss. Step 0 divergence is consistent with the bug.
+
+Two tests, because one is not sufficient:
+
+- *End to end.* Two seeds of `mionet_in_cascade`, **identical config hash**
+  `b23cd5d8fa43ff88` and identical distribution hash — which is what makes them a
+  seed sweep rather than two unrelated runs. 25 of 31 weight tensors differ,
+  max |diff| 1.95; predictions differ by up to 12.01 degC on theta_TO; 158 vs 200
+  epochs; theta_TO MAE 3.905 vs 4.770.
+- *Batch order isolated.* Same model weights loaded into both sides via
+  `load_state_dict`, so initialisation is held constant by construction and
+  anything that differs is batch order alone. The first three drawn batches
+  differ, max |diff| 30.53 degC on the drawn theta_TO(0). This is the test the
+  end-to-end run cannot substitute for.
+
+`--seed` deliberately does **not** set `smoke = True`, unlike `--n-ic` and
+`--n-test`. Those shrink the experiment; a seed sweep *is* the experiment.
+Verified: a run with `--seed` as the only override records `status: "run"`.
+
+**The same defect with the arrow reversed, found while auditing the runbook for
+others of its shape.** `18_swing_fidelity.py`, `24_rollout_thermal_error.py` and
+`32_cod_figure_and_monotonicity.py` each wrote to a single hard-coded path in
+`audit_port/`. Correct for a one-off, destructive in a loop: 15 cells x 7 seeds
+overwrite one file 105 times and keep the last. There the loop variable failed to
+reach the *computation*; here it fails to reach the *output path*. Both produce a
+plausible artifact that answers a question nobody asked. Added `--out` to 18 and
+24, which the runbook now passes per run. 32 is left fixed-path deliberately: it
+is a single-checkpoint diagnostic, not a sweep step, and is not in any loop.
+
+Also found while auditing: the runbook's loop listed 7 of the 15 configs that
+`make_matrix_configs.py` emits. The eight factorial and variant cells (J-92,
+ANALYSIS_PLAN Amendment 2) had configs but no line in the runbook that would ever
+run them. Added as a second loop block.
+
 ### J-92 Adding the IEC baseline to three architectures that never had one
 
 The 2x2 factorial (cascade x analytic baseline) needs every tier-1 architecture
@@ -1891,6 +1952,18 @@ interest is excluded by construction rather than by data.
 | 2 | `RolloutResult.theta_bias` (O-9) | a model with **zero error** | **-2.86 to -3.88 degC** | ~0 |
 | 3 | `eol_months` (O-7) | a rollout that never reaches EOL | **0.0 months** | `None`, i.e. censored |
 | 4 | `clamp_frac_state_hi` on any **cascade** model | any batch at all — the model is irrelevant | the fraction of *initial conditions* above the ceiling, reported as a model diagnostic | the fraction of the **predicted** channel |
+| 5 | the matrix runbook's seed loop (J-93) | one seed run seven times | seven directories, seven `run.json`, and a **zero** seed-variance column read as agreement | seven genuinely different runs, or nothing |
+
+Instance 5 is the only one so far that lived in a **shell loop** rather than in
+Python, which is why no unit test could have reached it: `--tag s$SEED` varied
+the output path and `training.seed` stayed put, so the artifact set looked
+complete. The generalisation worth carrying forward is that the sentinel does not
+need a metric to hide in — any *loop variable that changes where the answer is
+written without changing the answer* has the same signature. Its mirror image is
+equally silent: `18` and `24` wrote every one of 105 sweep reports to the same
+hard-coded path, keeping the last. Ask of any sweep: does the loop variable reach
+the computation, **and** does it reach the output path? Both, or the set is a lie
+in one direction or the other.
 
 Instance 4 was found 2026-08-04 by an anomaly rather than by the metric: FNO,
 MIONet and S-DeepONet — different parameter counts, different convergence epochs

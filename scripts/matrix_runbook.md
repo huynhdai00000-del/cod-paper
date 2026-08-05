@@ -70,9 +70,14 @@ faster than the cost. C-11 assumes several Colab
 accounts writing into one Drive directory, so the order below is by *priority*,
 not by dependency — any account can take any line.
 
-Seeds are `1..7`, set with `training.seed`. `run.py` refuses to overwrite an
+Seeds are `1..7`, set with `run.py --seed`. `run.py` refuses to overwrite an
 existing run directory, so a repeated line is an error rather than a silent
 clobber.
+
+`--seed` is a **production** override and deliberately does not mark the run as a
+smoke test — a seed sweep is the real experiment. It reaches both the global RNG
+(weight initialisation) and the trainer's own batch-order generator; see the
+warning below for why both matter.
 
 ```bash
 for CFG in fno_in_cascade fno_monolithic \
@@ -83,6 +88,45 @@ for CFG in fno_in_cascade fno_monolithic \
     python scripts/run.py --config configs/matrix/$CFG.yaml \
         --freeze-hash fc4cb76c3b32ec17 \
         --max-wall-seconds 10800 \
+        --seed $SEED \
+        --tag s$SEED \
+        --out /content/drive/MyDrive/cod_matrix
+  done
+done
+```
+
+> **Both `--seed $SEED` and `--tag s$SEED` are required, and they do different
+> jobs.** `--tag` names the output directory; `--seed` changes what is computed.
+> An earlier version of this loop had only `--tag`, which meant all seven runs
+> would have trained on `training.seed` from the config — seven bit-identical
+> results in seven differently-named directories, and the `--overwrite` guard
+> would not have fired because the tags differed. Verified fixed: two seeds of
+> `mionet_in_cascade` on an identical config hash gave 25 of 31 weight tensors
+> differing and loss curves diverging from step 0, and a direct test with weights
+> held fixed showed the drawn batches differ, so the seed reaches the batch-order
+> generator and not just initialisation.
+>
+> The general shape to watch for in this file: **a loop variable that changes the
+> output path without changing what is computed.** It produces a full-looking set
+> of results that are all the same run.
+
+### The factorial and variant cells
+
+The loop above is the six-cell matrix plus Ablation A. The 2×2 factorial cells
+(PORT_LOG J-92) and the bounded-correction variant (ANALYSIS_PLAN Amendment 2)
+are eight further configs, run the same way:
+
+```bash
+for CFG in fno_baseline_in_cascade fno_baseline_monolithic \
+           mionet_baseline_in_cascade mionet_baseline_monolithic \
+           sdeeponet_baseline_in_cascade sdeeponet_baseline_monolithic \
+           pideeponet_baseline_monolithic \
+           cod_bounded_correction; do
+  for SEED in 1 2 3 4 5 6 7; do
+    python scripts/run.py --config configs/matrix/$CFG.yaml \
+        --freeze-hash fc4cb76c3b32ec17 \
+        --max-wall-seconds 10800 \
+        --seed $SEED \
         --tag s$SEED \
         --out /content/drive/MyDrive/cod_matrix
   done
@@ -138,9 +182,16 @@ Locally, after pulling the Drive directory:
 
 ```bash
 # Per cell, the C-11 honesty protocol: three tables, not just MAE.
-python audit_port/scripts/18_swing_fidelity.py --checkpoint <run>/model.pt
+# --out is REQUIRED in a sweep. Both scripts default to a single fixed path in
+# audit_port/, which is right for a one-off and destructive in a loop: 15 cells x
+# 7 seeds would overwrite one file 105 times and keep the last. That is the same
+# defect as the --tag/--seed one above with the arrow reversed -- there the loop
+# variable did not reach the computation, here it does not reach the output path.
+python audit_port/scripts/18_swing_fidelity.py --checkpoint <run>/model.pt \
+    --out <run>/swing_fidelity.md
 python audit_port/scripts/24_rollout_thermal_error.py --checkpoint <run>/model.pt \
-    --max-windows 730 --k-scenarios 0.95 --json-out <run>/rollout.json
+    --max-windows 730 --k-scenarios 0.95 --json-out <run>/rollout.json \
+    --out <run>/rollout_thermal_error.md
 ```
 
 C-11 requires every model to report **three** things, not one:

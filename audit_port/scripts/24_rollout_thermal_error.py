@@ -241,7 +241,15 @@ def main() -> int:
                     help="Render the report from previously written JSON rows. "
                          "Combining must not require re-running the rollouts.")
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--out", type=Path, default=OUT,
+                    help="Where to write the report. Defaults to a FIXED path, "
+                         "correct for a one-off but destructive in a loop: 15 "
+                         "cells x 7 seeds would overwrite one file 105 times and "
+                         "keep only the last. Pass a per-run path in a sweep. "
+                         "--json-out already varies per run; this is the markdown "
+                         "half that did not.")
     args = ap.parse_args()
+    out_path = args.out
 
     if args.render_from:
         rows = []
@@ -463,8 +471,9 @@ def _render(rows, args, label, failures) -> int:
       "downstream of the thermal branch through the cascade; resetting them too "
       "would score the thermal prediction through a channel it does not drive.\n")
 
-    OUT.write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(f"Wrote {OUT}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(f"Wrote {out_path}")
     if failures:
         print("\nFAIL:")
         for f in failures:

@@ -162,13 +162,19 @@ def build_model(cfg, x_mean, x_std, device):
 
 
 def build_trainer(cfg, model, predict_fn, ts, device, max_epochs,
-                  batch_size=None, n_collocation=None):
+                  batch_size=None, n_collocation=None, seed=None):
     """Pick the training loop the config asks for.
 
     `loop: train_v34` is what trained the headline COD model; `train_physics` is
     what trained every baseline and every capacity-sweep checkpoint. They are
     different loops, not two names for one (see cod/training/train.py), so the
     config has to say which.
+
+    `seed` is threaded here as well as into the global RNG because the trainer
+    owns its **own** generator for batch order. A `--seed` that reached only
+    `torch.manual_seed` would vary the weight initialisation and leave every
+    seed drawing the same batches in the same order — a partly degenerate sweep
+    that `run.json` would report as seven distinct seeds.
     """
     t = cfg["training"]
     # `cod_no_baseline` defaults to the same loop as `cod`, not to the baseline
@@ -189,7 +195,7 @@ def build_trainer(cfg, model, predict_fn, ts, device, max_epochs,
                              80 if loop == "train_v34" else 60)),
         n_chunks=int(t.get("n_chunks", 5)),
         max_epochs=max_epochs,
-        seed=int(t.get("seed", 0)),
+        seed=int(seed if seed is not None else t.get("seed", 0)),
         causal_log_space=bool(cw.get("log_space", True)),
         causal_floor=float(cw.get("weight_floor", 1e-8)),
         causal_schedule_shared=bool(cw.get("schedule_shared", True)),
@@ -222,6 +228,13 @@ def main() -> int:
                          "its memory; a wiring test needs both small.")
     ap.add_argument("--n-collocation", type=int, default=None,
                     help="Override training.n_collocation (smoke tests).")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="Override training.seed. This is a PRODUCTION override "
+                         "and deliberately does NOT set smoke-test status: a "
+                         "seed sweep is the real experiment. Reaches both the "
+                         "global RNG and the trainer's own batch-order "
+                         "generator; setting only the first would leave every "
+                         "seed drawing identical batches.")
     ap.add_argument("--n-test", type=int, default=None,
                     help="Override the number of evaluation cases.")
     ap.add_argument("--device", default=None, choices=["cpu", "cuda"])
@@ -247,7 +260,10 @@ def main() -> int:
         from cod.config import assert_distribution_unchanged
         assert_distribution_unchanged(cfg, args.freeze_hash)
 
-    seed = int(cfg["training"]["seed"])
+    # One resolved seed, used for the global RNG here AND passed to
+    # `build_trainer` below, which seeds the trainer's own batch-order generator.
+    # Both, or the sweep is partly degenerate — see `build_trainer`.
+    seed = int(args.seed if args.seed is not None else cfg["training"]["seed"])
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -372,7 +388,7 @@ def main() -> int:
     # ── Train ──────────────────────────────────────────────────────────────
     trainer, loop = build_trainer(cfg, model, predict_fn, ts, device,
                                   max_epochs, args.batch_size,
-                                  args.n_collocation)
+                                  args.n_collocation, seed)
     crit_cfg = dict(cfg["training"]["convergence"])
     crit_cfg["max_epochs"] = max_epochs
     if args.max_wall_seconds is not None:
