@@ -103,6 +103,11 @@ def build_model(cfg, x_mean, x_std, device):
     n_sensors = int(cfg["distribution"].get("n_sensors", 100))
     T = float(cfg["distribution"]["window_minutes"])
 
+    # Factorial baseline factor, read once for every matrix architecture.
+    # PORT_LOG J-92: a cell with this on is a HYBRID and is labelled
+    # "<arch> + IEC delta-learning", never as the source architecture.
+    use_baseline = bool(m.get("use_baseline", False))
+
     if kind in MATRIX_BUILDERS:
         cls, predict = MATRIX_BUILDERS[kind]
         # Each architecture reads its own hyperparameters from the config under
@@ -116,21 +121,24 @@ def build_model(cfg, x_mean, x_std, device):
                         modes=int(f.get("modes", FNO_MODES)),
                         n_layers=int(f.get("layers", FNO_LAYERS)), T=T,
                         x_mean=x_mean, x_std=x_std,
-                        domain_padding=int(f.get("domain_padding", 0)))
+                        domain_padding=int(f.get("domain_padding", 0)),
+                        use_baseline=use_baseline)
         elif kind.startswith("mionet"):
             mi = m.get("mionet", {})
             model = cls(n_sensors=n_sensors,
                         width=int(mi.get("width", MIONET_WIDTH)),
                         depth=int(mi.get("depth", MIONET_DEPTH)),
                         p=int(mi.get("basis_dim", MIONET_P)), T=T,
-                        x_mean=x_mean, x_std=x_std)
+                        x_mean=x_mean, x_std=x_std,
+                        use_baseline=use_baseline)
         else:
             sd = m.get("sdeeponet", {})
             model = cls(n_sensors=n_sensors,
                         cell=str(sd.get("cell", SDON_CELL)),
                         trunk_layers=int(sd.get("trunk_layers",
                                                 SDON_TRUNK_LAYERS)),
-                        T=T, x_mean=x_mean, x_std=x_std)
+                        T=T, x_mean=x_mean, x_std=x_std,
+                        use_baseline=use_baseline)
         return model, predict
 
     if kind in ("cod", "cod_no_baseline"):
@@ -145,8 +153,11 @@ def build_model(cfg, x_mean, x_std, device):
         )
         return model, cod_predict
 
+    mono_kw = ({"use_baseline": use_baseline}
+               if kind == "monolithic_fair" else {})
     model = MODEL_BUILDERS[kind](d_h=d_h, p=p, n_layers=n_layers,
-                                n_exp=n_exp_feats, x_mean=x_mean, x_std=x_std)
+                                n_exp=n_exp_feats, x_mean=x_mean, x_std=x_std,
+                                **mono_kw)
     return model, mono_predict
 
 

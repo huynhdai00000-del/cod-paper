@@ -53,6 +53,7 @@ import torch
 import torch.nn as nn
 
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, TW, tau_oil
+from cod.models.analytic_baseline import AnalyticBaseline
 from cod.models.blocks import ic_mask, per_state_output_scale_raw
 from cod.models.cascade import GasCascade
 
@@ -210,7 +211,7 @@ class FNOMonolithic(nn.Module):
     def __init__(self, n_sensors: int = N_SENSORS, width: int = FNO_WIDTH,
                  modes: int = FNO_MODES, n_layers: int = FNO_LAYERS,
                  T: float = TW, x_mean=None, x_std=None,
-                 domain_padding: int = 0):
+                 domain_padding: int = 0, use_baseline: bool = False):
         super().__init__()
         self.T = float(T)
         # SharedPhysicsTrainer reads this to size the physics residual;
@@ -226,6 +227,11 @@ class FNOMonolithic(nn.Module):
         # has to learn `x(0) = x0` while COD gets it by construction would fail
         # for a reason that is not its architecture.
         self.output_scale_raw = per_state_output_scale_raw(x_std, STATE_DIM_FAST)
+        # Factorial baseline factor. `AnalyticBaseline` is parameter-free, so
+        # `n_parameters()` is identical with and without it and the factor is
+        # one variable rather than also a capacity change. PORT_LOG J-92.
+        self.baseline = (AnalyticBaseline(T=T, n_sensors=n_sensors)
+                         if use_baseline else None)
         if x_mean is not None:
             self.register_buffer("x_mean_TO",
                                  torch.tensor([x_mean[0]], dtype=torch.float32))
@@ -239,9 +245,25 @@ class FNOMonolithic(nn.Module):
     def n_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
+    def _anchor(self, x0, u_sensors, t, theta_ss_grid=None):
+        """What the correction is added to, per state.
+
+        Without the baseline this is the constant `x0`, which is the published
+        form. With it, `theta_TO` is anchored on the IEC analytic solution `H(t)`
+        and the gases stay anchored on their own initial values, because there is
+        no analytic baseline for a gas concentration — the cascade is what plays
+        that role, and this is the *monolithic* configuration.
+        """
+        anchor = x0
+        if self.baseline is not None:
+            H = self.baseline(x0[:, 0:1], u_sensors, t, theta_ss_grid)
+            anchor = torch.cat([H, x0[:, 1:]], dim=-1)
+        return anchor
+
     def forward(self, x0, u_sensors, t, theta_ss_grid=None):
         raw = _interp_time(self.trunk(x0, u_sensors), t, self.T)
-        return x0 + ic_mask(t, self.tau, self.T) * self.output_scale * raw
+        anchor = self._anchor(x0, u_sensors, t, theta_ss_grid)
+        return anchor + ic_mask(t, self.tau, self.T) * self.output_scale * raw
 
 
 class FNOInCascade(nn.Module):
@@ -260,7 +282,7 @@ class FNOInCascade(nn.Module):
     def __init__(self, n_sensors: int = N_SENSORS, width: int = FNO_WIDTH,
                  modes: int = FNO_MODES, n_layers: int = FNO_LAYERS,
                  T: float = TW, x_mean=None, x_std=None,
-                 domain_padding: int = 0):
+                 domain_padding: int = 0, use_baseline: bool = False):
         super().__init__()
         self.T = float(T)
         self.n_sensors = int(n_sensors)
@@ -272,6 +294,11 @@ class FNOInCascade(nn.Module):
                                domain_padding)
         self.cascade = GasCascade(T=T, n_sensors=n_sensors)
         self.output_scale_raw = per_state_output_scale_raw(x_std, STATE_DIM_FAST)
+        # Factorial baseline factor. `AnalyticBaseline` is parameter-free, so
+        # `n_parameters()` is identical with and without it and the factor is
+        # one variable rather than also a capacity change. PORT_LOG J-92.
+        self.baseline = (AnalyticBaseline(T=T, n_sensors=n_sensors)
+                         if use_baseline else None)
         t_grid = torch.linspace(0.0, float(T), self.n_sensors).view(1, -1, 1)
         self.register_buffer("t_grid", t_grid)
         if x_mean is not None:
@@ -294,7 +321,17 @@ class FNOInCascade(nn.Module):
         # integrates starts at x0 exactly rather than only the queried point.
         raw_grid = self.trunk(x0, u_sensors)                          # (B, ns, 1)
         phi_grid = ic_mask(self.t_grid, self.tau, self.T)
-        theta_grid = x0_TO.unsqueeze(1) + phi_grid * self.output_scale[0] * raw_grid
+        if self.baseline is None:
+            anchor_grid = x0_TO.unsqueeze(1)                          # (B, 1, 1)
+        else:
+            # H over the whole grid, because the quadrature integrates the
+            # trajectory rather than sampling it at the query time. Anchoring only
+            # the queried point would leave the cascade integrating a trajectory
+            # the model does not predict.
+            anchor_grid = self.baseline.on_grid(
+                x0_TO, u_sensors, self.t_grid.view(-1, 1),
+                theta_ss_grid).unsqueeze(-1)                          # (B, ns, 1)
+        theta_grid = anchor_grid + phi_grid * self.output_scale[0] * raw_grid
         theta_TO = _interp_time(theta_grid, t, self.T)
         # `.detach()` mirrors CODOperator: the cascade is one-way, so no gradient
         # flows from the gas loss back into the thermal branch. Keeping it makes

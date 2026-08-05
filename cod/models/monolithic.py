@@ -55,6 +55,7 @@ from cod.data.physics import (
     m_exp,
     tau_oil,
 )
+from cod.models.analytic_baseline import AnalyticBaseline
 from cod.models.blocks import (ModifiedMLP, build_trunk_feats, ic_mask,
                                per_state_output_scale_raw)
 
@@ -97,7 +98,8 @@ class MonolithicFair(nn.Module):
     """
 
     def __init__(self, d_h: int = 128, p: int = 64, n_layers: int = 4,
-                 n_exp: int = 12, x_mean=None, x_std=None):
+                 n_exp: int = 12, x_mean=None, x_std=None,
+                 use_baseline: bool = False):
         super().__init__()
         self.state_dim = STATE_DIM_FAST
         self.T = TW
@@ -109,6 +111,17 @@ class MonolithicFair(nn.Module):
         self.out_proj = nn.Linear(p, STATE_DIM_FAST)
         self.bias = nn.Parameter(torch.zeros(STATE_DIM_FAST))
         self.output_scale_raw = _per_state_output_scale_raw(x_std)
+        # Factorial baseline factor (PORT_LOG J-92). Parameter-free, so
+        # `n_parameters()` is unchanged and the factor is one variable.
+        #
+        # NOTE on J-8, which this variant inherits: `n_exp` shadows the module
+        # global thermal exponent, so every MonolithicFair registers ne = 12.0
+        # instead of 0.8. **Both** PI-DeepONet monolithic cells carry it equally,
+        # so the baseline contrast *within* that pair is valid; what it affects is
+        # comparing either against COD's cells, which is already on the record
+        # (J-8). Fixing it here would make cells 1 and 2 differ in two ways.
+        self.baseline = (AnalyticBaseline(T=TW, n_sensors=N_SENSORS)
+                         if use_baseline else None)
 
         k_vals = torch.exp(torch.linspace(torch.log(torch.tensor(0.2)),
                                           torch.log(torch.tensor(5.0)), n_exp))
@@ -140,7 +153,14 @@ class MonolithicFair(nn.Module):
         # Was inline; now one definition shared with every C-11 matrix model
         # (cod.models.blocks.ic_mask). Identical expression — gate 3 checks it.
         phi = ic_mask(t, self.tau, self.T)
-        return x0 + phi * self.output_scale * raw_out
+        if self.baseline is None:
+            return x0 + phi * self.output_scale * raw_out
+        # Factorial cell 1 (PORT_LOG J-92): theta_TO anchored on H(t), gases on
+        # their own initial values, since no analytic baseline exists for a
+        # concentration and this is the monolithic configuration.
+        H = self.baseline(x0[:, 0:1], u, t)
+        anchor = torch.cat([H, x0[:, 1:]], dim=-1)
+        return anchor + phi * self.output_scale * raw_out
 
 
 class MonolithicMultiHead(nn.Module):

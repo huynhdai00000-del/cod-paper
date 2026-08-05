@@ -51,6 +51,7 @@ from cod.data.physics import (
 )
 from cod.data.steady_state import true_fixed_point_torch
 from cod.models.blocks import ModifiedMLP, build_trunk_feats
+from cod.models.analytic_baseline import ode_baseline
 from cod.models.cascade import gas_integral
 
 # Which analytic attractor the model is built on. "true_fixed_point" is the
@@ -222,29 +223,18 @@ class CODOperator(nn.Module):
         The battery model faces exp(19) ~ 2e8 on the same construction and had to
         switch to a closed-form recurrence (n15 cell 7).
         """
+        # Delegated to `cod.models.analytic_baseline.ode_baseline`, the one
+        # definition of H. The factorial's with-baseline cells for FNO, MIONet and
+        # S-DeepONet need the same physics, and a second copy is the defect
+        # CLAUDE.md names by example. The model's own buffers and cached
+        # theta_ss are passed in, so the delegation is bit-identical rather than
+        # merely equal within float32 --
+        # `audit_port/scripts/35_baseline_refactor_identical.py` checks that.
         ns = u_sensors.shape[-1] // 2
-        B = x0_TO.shape[0]
-        tau = self.tau_oil_buf
-        t_sq = t.squeeze(-1)
-        s_grid = torch.linspace(0.0, self.T, ns, device=x0_TO.device)
-        # theta_ss on the sensor grid needs no gradient: it reaches the output only
-        # through F_cum, and the t-gradient flows through `frac` and `decay`, not
-        # through these values. So it is safe to read from a cache.
         theta_ss_s = (theta_ss_grid if theta_ss_grid is not None
                       else self._theta_ss(u_sensors[:, :ns], u_sensors[:, ns:2 * ns]))
-        exp_s = torch.exp(s_grid / tau)
-        integrand = theta_ss_s * exp_s.unsqueeze(0) / tau
-        ds = self.T / (ns - 1)
-        trap = 0.5 * (integrand[:, :-1] + integrand[:, 1:]) * ds
-        F_cum = torch.cat(
-            [torch.zeros(B, 1, device=x0_TO.device), torch.cumsum(trap, dim=1)], dim=1)
-        tn = torch.clamp(t_sq / self.T * (ns - 1), 0.0, ns - 1 - 1e-6)
-        idx = torch.clamp(tn.long(), 0, ns - 2)
-        frac = tn - idx.float()
-        F_t = (torch.gather(F_cum, 1, idx.unsqueeze(1)).squeeze(1) * (1 - frac)
-               + torch.gather(F_cum, 1, (idx + 1).unsqueeze(1)).squeeze(1) * frac)
-        decay = torch.exp(-t_sq / tau)
-        return (x0_TO.squeeze(-1) * decay + decay * F_t).unsqueeze(-1)
+        return ode_baseline(x0_TO, u_sensors, t, self.T, self.tau_oil_buf,
+                            theta_ss_s)
 
     def _thermal_trunk_feat(self, t, u_sensors, x0_TO, theta_ss_grid=None):
         return build_trunk_feats(

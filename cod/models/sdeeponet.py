@@ -77,6 +77,7 @@ import torch
 import torch.nn as nn
 
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, TW, tau_oil
+from cod.models.analytic_baseline import AnalyticBaseline
 from cod.models.blocks import ic_mask, per_state_output_scale_raw
 from cod.models.cascade import GasCascade
 
@@ -155,7 +156,8 @@ class _SDeepONetBase(nn.Module):
     C-11 protocol every matrix model receives (`blocks.ic_mask`).
     """
 
-    def __init__(self, T: float, n_sensors: int, x_mean, x_std):
+    def __init__(self, T: float, n_sensors: int, x_mean, x_std,
+                 use_baseline: bool = False):
         super().__init__()
         self.T = float(T)
         self.n_sensors = int(n_sensors)
@@ -171,6 +173,11 @@ class _SDeepONetBase(nn.Module):
         self.output_scale_raw = per_state_output_scale_raw(x_std, STATE_DIM_FAST)
         t_grid = torch.linspace(0.0, float(T), self.n_sensors).view(-1, 1)
         self.register_buffer("t_grid", t_grid)
+        # Factorial baseline factor. `AnalyticBaseline` is parameter-free, so
+        # `n_parameters()` is identical with and without it and the factor is one
+        # variable rather than also a capacity change. PORT_LOG J-92.
+        self.baseline = (AnalyticBaseline(T=T, n_sensors=n_sensors)
+                         if use_baseline else None)
 
     @property
     def output_scale(self):
@@ -178,6 +185,18 @@ class _SDeepONetBase(nn.Module):
 
     def _norm(self, x0):
         return (x0 - self.xm) / self.xs if hasattr(self, "xm") else x0
+
+    def _anchor(self, x0, u_sensors, t, theta_ss_grid=None):
+        """What the correction is added to, per state.
+
+        Without the baseline this is the constant `x0`, the published form. With
+        it, `theta_TO` is anchored on `H(t)` and the gases stay on their own
+        initial values, since no analytic baseline exists for a concentration.
+        """
+        if self.baseline is None:
+            return x0
+        H = self.baseline(x0[:, 0:1], u_sensors, t, theta_ss_grid)
+        return torch.cat([H, x0[:, 1:]], dim=-1)
 
     def _sequence(self, x0n, u_sensors):
         """The branch input: (K, theta_a) per step, with x0 broadcast alongside."""
@@ -242,8 +261,8 @@ class SDeepONetMonolithic(_SDeepONetBase):
 
     def __init__(self, n_sensors: int = N_SENSORS, cell: str = SDON_CELL,
                  trunk_layers: int = SDON_TRUNK_LAYERS, T: float = TW,
-                 x_mean=None, x_std=None):
-        super().__init__(T, n_sensors, x_mean, x_std)
+                 x_mean=None, x_std=None, use_baseline: bool = False):
+        super().__init__(T, n_sensors, x_mean, x_std, use_baseline)
         hd = self.n_sensors      # paper: hidden dim == number of input time steps
         self.hd = hd
         self.branch = _SequentialBranch(2 + STATE_DIM_FAST, hd, cell)
@@ -259,7 +278,8 @@ class SDeepONetMonolithic(_SDeepONetBase):
 
     def forward(self, x0, u_sensors, t, theta_ss_grid=None):
         raw = self._raw(self._norm(x0), u_sensors, t)
-        return x0 + ic_mask(t, self.tau, self.T) * self.output_scale * raw
+        anchor = self._anchor(x0, u_sensors, t, theta_ss_grid)
+        return anchor + ic_mask(t, self.tau, self.T) * self.output_scale * raw
 
 
 class SDeepONetInCascade(_SDeepONetBase):
@@ -272,8 +292,8 @@ class SDeepONetInCascade(_SDeepONetBase):
 
     def __init__(self, n_sensors: int = N_SENSORS, cell: str = SDON_CELL,
                  trunk_layers: int = SDON_TRUNK_LAYERS, T: float = TW,
-                 x_mean=None, x_std=None):
-        super().__init__(T, n_sensors, x_mean, x_std)
+                 x_mean=None, x_std=None, use_baseline: bool = False):
+        super().__init__(T, n_sensors, x_mean, x_std, use_baseline)
         hd = self.n_sensors
         self.hd = hd
         self.branch = _SequentialBranch(2 + STATE_DIM_FAST, hd, cell)
@@ -288,12 +308,20 @@ class SDeepONetInCascade(_SDeepONetBase):
 
         f_q = self.trunk(t / self.T)                                  # (B, hd)
         raw_q = (b * f_q).sum(dim=-1, keepdim=True) + self.bias
-        theta_TO = x0_TO + ic_mask(t, self.tau, self.T) * self.output_scale[0] * raw_q
+        anchor_q = (x0_TO if self.baseline is None
+                    else self.baseline(x0_TO, u_sensors, t, theta_ss_grid))
+        theta_TO = anchor_q + ic_mask(t, self.tau, self.T) * self.output_scale[0] * raw_q
 
         f_g = self.trunk(self.t_grid / self.T)                        # (ns, hd)
         raw_g = torch.einsum("bh,nh->bn", b, f_g) + self.bias
         phi_g = ic_mask(self.t_grid.view(1, -1), self.tau, self.T)
-        theta_grid = x0_TO + phi_g * self.output_scale[0] * raw_g
+        # H over the whole grid: the quadrature integrates the trajectory, so
+        # anchoring only the query point would leave the cascade integrating
+        # something the model does not predict.
+        anchor_g = (x0_TO if self.baseline is None
+                    else self.baseline.on_grid(x0_TO, u_sensors, self.t_grid,
+                                               theta_ss_grid))
+        theta_grid = anchor_g + phi_g * self.output_scale[0] * raw_g
         # Detached exactly as in CODOperator: the cascade is one-way by design.
         gases = self.cascade(t, u_sensors, x0_gas, theta_grid.detach())
         return torch.cat([theta_TO, gases], dim=-1)

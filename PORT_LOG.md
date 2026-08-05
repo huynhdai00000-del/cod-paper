@@ -1624,6 +1624,92 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-92 Adding the IEC baseline to three architectures that never had one
+
+The 2x2 factorial (cascade x analytic baseline) needs every tier-1 architecture
+run **with** the baseline as well as without. Seven new cells: cell 1 (baseline,
+monolithic) for all four architectures, cell 3 (baseline, in-cascade) for FNO,
+MIONet and S-DeepONet. COD is already cell 3 for PI-DeepONet and
+`cod_no_baseline` is its cell 4.
+
+**This is a departure from every source paper, and a different KIND of departure
+from the ones J-90 records.** J-90's adaptations were forced — a paper's domain
+was spatial and ours is time, so something had to change. This one is not forced:
+FNO, MIONet and S-DeepONet work perfectly well without an analytic baseline, and
+we are **adding** a component none of them has. Removing a component (Ablation A)
+ablates our method; adding one makes a hybrid of someone else's.
+
+**Naming, and it is not cosmetic.** These cells are labelled **"FNO + IEC
+delta-learning"**, "MIONet + IEC delta-learning", "S-DeepONet + IEC
+delta-learning", never as the base architecture. Reporting a hybrid under the
+source paper's name would attribute the hybrid's behaviour to the published
+method, which is the misattribution the whole J-90 discipline exists to prevent.
+The config `variant` strings carry the distinction so no generated table can lose
+it.
+
+**Why report both rather than pick one.** Reporting only the published form
+answers "how does FNO do on this problem". Reporting only the hybrid answers "how
+does delta-learning do". Neither alone answers the question the factorial exists
+for — *does the analytic baseline help every architecture, or only this one* —
+and that question is more interesting than either. Reporting both is also more
+honest to the source papers than reporting one: it separates what they published
+from what we did to it.
+
+**One definition, not four.** `cod/models/analytic_baseline.py` holds `H(t)`, and
+`CODOperator._ode_baseline` now delegates to it.
+`35_baseline_refactor_identical.py` asserts bit-identity against the pre-refactor
+file read out of git — 9 checks, all 0.000e+00, covering both `theta_ss` modes,
+the cached and recomputed paths, the full forward, the standalone
+`AnalyticBaseline` against `CODOperator`, and `on_grid` against pointwise
+evaluation. Phase 1 gates still pass.
+
+**What makes the baseline factor one variable.** `AnalyticBaseline` is
+parameter-free, and it is asserted so. Measured `n_parameters()` with and without
+it, for every class:
+
+| class | without | with |
+|---|---|---|
+| `FNOMonolithic` | 551,180 | 551,180 |
+| `FNOInCascade` | 550,535 | 550,535 |
+| `MIONetMonolithic` | 564,812 | 564,812 |
+| `MIONetInCascade` | 363,807 | 363,807 |
+| `SDeepONetMonolithic` | 849,501 | 849,501 |
+| `SDeepONetInCascade` | 798,996 | 798,996 |
+| `MonolithicFair` | 156,498 | 156,498 |
+
+So the factor is not also a capacity change. The initial condition is still
+satisfied exactly in every case (`|x(0) - x0|` = 0.0e+00), because `H(0) = x0_TO`
+by construction and `phi(0) = 0`.
+
+**Two implementation decisions worth recording.**
+
+*The gases are not anchored on anything.* In a **monolithic** with-baseline cell,
+`theta_TO` is anchored on `H(t)` and the five gases stay anchored on their own
+initial values. There is no analytic baseline for a concentration — the cascade
+is what plays that role, and this is the configuration that does not have one.
+
+*In-cascade cells anchor on the whole grid, not the query point.* The quadrature
+integrates the thermal trajectory rather than sampling it, so `H` is evaluated
+over the full sensor grid via `AnalyticBaseline.on_grid`. Anchoring only the
+queried point would leave the cascade integrating a trajectory the model does not
+predict — a subtler version of the defect `31_clamp_diag_provenance.py` found.
+
+**PI-DeepONet cell 1 inherits J-8.** `MonolithicFair` shadows the thermal exponent
+to 12 instead of 0.8. Both PI-DeepONet monolithic cells carry it **equally**, so
+the baseline contrast within that pair is valid; what it affects is comparing
+either against COD's cells, which J-8 already records. Fixing it here would make
+cells 1 and 2 differ in two ways, which is worse for the factorial than a shared
+known defect.
+
+**A prediction already on the record.** `33_fno_spectral_precheck.py`, run before
+these cells were written, measured that the baseline cuts FNO's endpoint mismatch
+24-fold (11.12 -> 0.47 degC) and that the residual stays representable within
+`k_max = 16`. So if J-90's Gibbs mechanism is what costs FNO, **FNO's
+with-baseline cells should gain more than MIONet's and S-DeepONet's do**. If FNO
+gains only as much as they do, that mechanism is not what was hurting it.
+`34_endpoint_error.py` established the baseline condition, also before these
+cells existed.
+
 ### J-90 C-11 tier 1: what was adapted, how the budget is matched, what was chosen
 
 Three decisions that must be on the record **before** any of these architectures

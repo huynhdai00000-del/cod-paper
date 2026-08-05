@@ -120,11 +120,30 @@ def score_from_checkpoint(ckpt_path: Path, cfg, n_test: int, guard: float):
     model.load_state_dict(ck["model_state_dict"], strict=True)
     model.eval()
 
-    # The saved normalisation must be what the model actually carries.
-    if not np.allclose(model.x_mean_TO.numpy(), np.asarray(ck["x_mean"])[:1],
-                       rtol=0, atol=0):
+    # The saved normalisation must be what the model actually carries. Two
+    # buffer namings exist in the repo and both must be accepted: the COD family
+    # and the matrix architectures register `x_mean_TO` (theta_TO only, which is
+    # all they normalise), while the monolithic family registers the full-vector
+    # `xm`. An earlier version of this check hard-coded `x_mean_TO` and failed
+    # `pideeponet_baseline_monolithic` with an AttributeError even though every
+    # metric had reproduced at 0.00e+00 — a defect in the checker, not the
+    # checkpoint.
+    #
+    # Absence of BOTH is still a failure: this check exists to prove the
+    # normalisation survived the round-trip, so silently skipping it would make
+    # it decorative.
+    if hasattr(model, "x_mean_TO"):
+        got, want = model.x_mean_TO.numpy(), np.asarray(ck["x_mean"])[:1]
+    elif hasattr(model, "xm"):
+        got, want = model.xm.numpy(), np.asarray(ck["x_mean"])
+    else:
+        raise SystemExit("[FAIL] the reloaded model carries no normalisation "
+                         "buffer under either known name (`x_mean_TO`, `xm`), so "
+                         "the checkpoint cannot be shown to have restored it")
+    if not np.allclose(got, want, rtol=0, atol=0):
         raise SystemExit("[FAIL] x_mean in the checkpoint metadata does not "
-                         "match the x_mean_TO buffer restored from the weights")
+                         "match the normalisation buffer restored from the "
+                         f"weights: {got!r} vs {want!r}")
 
     cases, T, tier_name = rebuild_cases(cfg, n_test)
     t_eval = np.linspace(0, T, 50)

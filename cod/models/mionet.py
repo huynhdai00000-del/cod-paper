@@ -54,6 +54,7 @@ import torch
 import torch.nn as nn
 
 from cod.data.physics import N_SENSORS, STATE_DIM_FAST, TW, tau_oil
+from cod.models.analytic_baseline import AnalyticBaseline
 from cod.models.blocks import ic_mask, per_state_output_scale_raw
 from cod.models.cascade import GasCascade
 
@@ -136,9 +137,15 @@ class _MIONetBase(nn.Module):
     are O(1) and the IC is fixed at zero.
     """
 
-    def __init__(self, T: float, x_mean, x_std):
+    def __init__(self, T: float, x_mean, x_std, n_sensors: int = N_SENSORS,
+                 use_baseline: bool = False):
         super().__init__()
         self.T = float(T)
+        # Factorial baseline factor. `AnalyticBaseline` is parameter-free, so
+        # `n_parameters()` is identical with and without it and the factor is one
+        # variable rather than also a capacity change. PORT_LOG J-92.
+        self.baseline = (AnalyticBaseline(T=T, n_sensors=n_sensors)
+                         if use_baseline else None)
         # SharedPhysicsTrainer reads this to size the physics residual;
         # every model driven by that trainer must expose it.
         self.state_dim = STATE_DIM_FAST
@@ -165,6 +172,19 @@ class _MIONetBase(nn.Module):
     def _norm(self, x0):
         return (x0 - self.xm) / self.xs if hasattr(self, "xm") else x0
 
+    def _anchor(self, x0, u_sensors, t, theta_ss_grid=None):
+        """What the correction is added to, per state.
+
+        Without the baseline this is the constant `x0`, the published form. With
+        it, `theta_TO` is anchored on `H(t)` while the gases stay on their own
+        initial values — there is no analytic baseline for a gas concentration,
+        and in the monolithic configuration nothing else plays that role.
+        """
+        if self.baseline is None:
+            return x0
+        H = self.baseline(x0[:, 0:1], u_sensors, t, theta_ss_grid)
+        return torch.cat([H, x0[:, 1:]], dim=-1)
+
     def n_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
@@ -174,14 +194,15 @@ class MIONetMonolithic(_MIONetBase):
 
     def __init__(self, n_sensors: int = N_SENSORS, width: int = MIONET_WIDTH,
                  depth: int = MIONET_DEPTH, p: int = MIONET_P, T: float = TW,
-                 x_mean=None, x_std=None):
-        super().__init__(T, x_mean, x_std)
+                 x_mean=None, x_std=None, use_baseline: bool = False):
+        super().__init__(T, x_mean, x_std, n_sensors, use_baseline)
         self.n_sensors = int(n_sensors)
         self.core = _MIONetCore(STATE_DIM_FAST, n_sensors, width, depth, p)
 
     def forward(self, x0, u_sensors, t, theta_ss_grid=None):
         raw = self.core(self._norm(x0), u_sensors, t)
-        return x0 + ic_mask(t, self.tau, self.T) * self.output_scale * raw
+        anchor = self._anchor(x0, u_sensors, t, theta_ss_grid)
+        return anchor + ic_mask(t, self.tau, self.T) * self.output_scale * raw
 
 
 class MIONetInCascade(_MIONetBase):
@@ -197,15 +218,15 @@ class MIONetInCascade(_MIONetBase):
 
     def __init__(self, n_sensors: int = N_SENSORS, width: int = MIONET_WIDTH,
                  depth: int = MIONET_DEPTH, p: int = MIONET_P, T: float = TW,
-                 x_mean=None, x_std=None):
-        super().__init__(T, x_mean, x_std)
+                 x_mean=None, x_std=None, use_baseline: bool = False):
+        super().__init__(T, x_mean, x_std, n_sensors, use_baseline)
         self.n_sensors = int(n_sensors)
         self.core = _MIONetCore(1, n_sensors, width, depth, p)
         self.cascade = GasCascade(T=T, n_sensors=n_sensors)
         grid = torch.linspace(0.0, float(T), self.n_sensors).view(-1, 1)
         self.register_buffer("t_grid", grid)
 
-    def _theta_grid(self, x0n, u_sensors, x0_TO):
+    def _theta_grid(self, x0n, u_sensors, x0_TO, theta_ss_grid=None):
         """theta_TO on the sensor grid: branches once, trunk at every grid point."""
         B, ns = x0n.shape[0], self.n_sensors
         g = (self.core.branch_x0(x0n)
@@ -214,16 +235,27 @@ class MIONetInCascade(_MIONetBase):
         f = self.core.trunk(self.t_grid / self.T).view(ns, self.core.p)     # (ns, p)
         raw = torch.einsum("bp,np->bn", g, f) + self.core.bias     # (B, ns)
         phi = ic_mask(self.t_grid.view(1, -1), self.tau, self.T)
-        return x0_TO + phi * self.output_scale[0] * raw
+        if self.baseline is None:
+            anchor = x0_TO
+        else:
+            # H over the whole grid: the quadrature integrates the trajectory
+            # rather than sampling it, so anchoring only the query point would
+            # leave the cascade integrating something the model does not predict.
+            anchor = self.baseline.on_grid(x0_TO, u_sensors,
+                                           self.t_grid, theta_ss_grid)
+        return anchor + phi * self.output_scale[0] * raw
 
     def forward(self, x0, u_sensors, t, theta_ss_grid=None):
         x0n = self._norm(x0)
         x0_TO, x0_gas = x0[:, 0:1], x0[:, 1:]
         raw = self.core(x0n, u_sensors, t)
-        theta_TO = x0_TO + ic_mask(t, self.tau, self.T) * self.output_scale[0] * raw
+        anchor_q = (x0_TO if self.baseline is None
+                    else self.baseline(x0_TO, u_sensors, t, theta_ss_grid))
+        theta_TO = anchor_q + ic_mask(t, self.tau, self.T) * self.output_scale[0] * raw
         # Detached exactly as in CODOperator: the cascade is one-way by design, so
         # the gas loss must not send gradient into the thermal branch.
-        theta_grid = self._theta_grid(x0n, u_sensors, x0_TO).detach()
+        theta_grid = self._theta_grid(x0n, u_sensors, x0_TO,
+                                      theta_ss_grid).detach()
         gases = self.cascade(t, u_sensors, x0_gas, theta_grid)
         return torch.cat([theta_TO, gases], dim=-1)
 

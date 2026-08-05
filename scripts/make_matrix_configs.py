@@ -74,6 +74,60 @@ CELLS = {
                  "Same trunk departure as above.",
         "sdeeponet": {"cell": "gru", "trunk_layers": 6},
     },
+    # ── Factorial cell 1: with IEC baseline, monolithic ────────────────────
+    # PORT_LOG J-92. These are HYBRIDS, not the source architectures, and the
+    # `variant` name carries that so no table can label them otherwise.
+    "fno_baseline_monolithic": {
+        "kind": "fno_monolithic", "use_baseline": True,
+        "notes": "FNO + IEC delta-learning, monolithic. Factorial cell 1. NOT "
+                 "FNO: the published design has no analytic baseline, so this is "
+                 "a hybrid and must be labelled as one (J-92). The spectral "
+                 "pre-check established the residual is representable within "
+                 "k_max = 16, so this cell tests delta-learning and not mode "
+                 "truncation.",
+        "fno": {"modes": 16, "width": 64, "layers": 4, "domain_padding": 0},
+    },
+    "mionet_baseline_monolithic": {
+        "kind": "mionet_monolithic", "use_baseline": True,
+        "notes": "MIONet + IEC delta-learning, monolithic. Factorial cell 1.",
+        "mionet": {"depth": 2, "width": 200, "basis_dim": 200},
+    },
+    "sdeeponet_baseline_monolithic": {
+        "kind": "sdeeponet_monolithic", "use_baseline": True,
+        "notes": "S-DeepONet + IEC delta-learning, monolithic. Factorial cell 1. "
+                 "Carries the trunk departure of J-90 as well.",
+        "sdeeponet": {"cell": "gru", "trunk_layers": 6},
+    },
+    "pideeponet_baseline_monolithic": {
+        "kind": "monolithic_fair", "use_baseline": True,
+        "notes": "PI-DeepONet + IEC delta-learning, monolithic. Factorial cell 1 "
+                 "for the fourth architecture; cell 2 is MonolithicFair, cell 3 "
+                 "is COD, cell 4 is cod_no_baseline. Inherits J-8 (ne shadowed "
+                 "to 12) exactly as cell 2 does, so the baseline contrast within "
+                 "the pair is valid; comparing either against COD's cells is "
+                 "affected, which J-8 already records.",
+    },
+    # ── Factorial cell 3: with IEC baseline, in-cascade ────────────────────
+    # COD is already cell 3 for PI-DeepONet, so only three are needed here.
+    "fno_baseline_in_cascade": {
+        "kind": "fno_in_cascade", "use_baseline": True,
+        "notes": "FNO + IEC delta-learning, in-cascade. Factorial cell 3. The "
+                 "sharpest test of J-90's endpoint mechanism: the baseline cuts "
+                 "the endpoint mismatch 24-fold (11.12 -> 0.47 degC), so if that "
+                 "mechanism is what costs FNO, this cell should gain MORE than "
+                 "the MIONet and S-DeepONet equivalents gain.",
+        "fno": {"modes": 16, "width": 64, "layers": 4, "domain_padding": 0},
+    },
+    "mionet_baseline_in_cascade": {
+        "kind": "mionet_in_cascade", "use_baseline": True,
+        "notes": "MIONet + IEC delta-learning, in-cascade. Factorial cell 3.",
+        "mionet": {"depth": 2, "width": 200, "basis_dim": 200},
+    },
+    "sdeeponet_baseline_in_cascade": {
+        "kind": "sdeeponet_in_cascade", "use_baseline": True,
+        "notes": "S-DeepONet + IEC delta-learning, in-cascade. Factorial cell 3.",
+        "sdeeponet": {"cell": "gru", "trunk_layers": 6},
+    },
     "cod_bounded_correction": {
         "kind": "cod",
         "notes": "ANALYSIS_PLAN Amendment 2. COD with tanh on the neural "
@@ -108,6 +162,10 @@ CELLS = {
 TRAINING_OVERRIDES = {
     "cod_no_baseline": {"loop": "train_v34"},
     "cod_bounded_correction": {"loop": "train_v34"},
+    # The PI-DeepONet monolithic cells use the shared physics trainer, the same
+    # as cell 2 (MonolithicFair), so the baseline contrast within that pair is
+    # not confounded by a change of loop.
+    "pideeponet_baseline_monolithic": {"loop": "train_physics"},
 }
 
 
