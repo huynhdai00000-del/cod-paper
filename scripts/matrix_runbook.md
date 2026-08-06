@@ -228,6 +228,20 @@ ppm — and `run.json` does not carry it. A run without one contributes nothing 
 the primary tables, and the aggregator reports H1 as undecided rather than
 promoting the demoted 12 h gas MAE in its place.
 
+**The first checkpoint on a scenario pays for all of them.** The reference
+rollout and the cyclic burn-ins are model-independent, so they are computed once
+per `(K, horizon)` and cached under `audit_port/_rollout_cache/`; every later
+checkpoint reuses them. Measured on a real checkpoint at 120 windows: **235 s
+cold, 6.5 s warm, 36x** (`40_rollout_cache_speedup.py`). Run the scenarios in
+any order — the cache fills itself.
+
+Do **not** delete the cache between runs, and do not pass `--no-cache` except to
+reproduce the uncached path. The cache key includes a fingerprint of
+`cod/eval/rollout.py`, `cod/data/physics.py` and `cod/data/steady_state.py`, so
+editing the physics invalidates it automatically rather than silently scoring
+models against a stale truth; `39_rollout_cache_identical.py` proves the cached
+path is bit-identical to the uncached one.
+
 C-11 requires every model to report **three** things, not one:
 
 1. the stratified swing table, by realised swing band;

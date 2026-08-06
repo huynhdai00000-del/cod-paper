@@ -1624,6 +1624,87 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-96 Caching the model-independent half of a rollout, and the trap in it
+
+DECISIONS N-13. The scoring pass recomputed, for every checkpoint, two things
+that do not depend on the model: the **reference rollout** and the
+**cyclic-endpoint burn-ins**. Both are properties of the forcing.
+`cod/eval/rollout_cache.py` computes them once per `(K, horizon)` and every later
+checkpoint reuses them.
+
+**Measured, through the real CLI, on a real checkpoint**
+(`40_rollout_cache_speedup.py`, three subprocess invocations at 120 windows):
+
+| | wall |
+|---|---|
+| cold, cache empty | **235.5 s** |
+| warm | **6.5 s** |
+| saving per additional checkpoint | 229 s, **97%** of the cold run, **36x** |
+
+Timed as subprocesses on purpose: an in-process timing would share the burn-in
+dict, the imported modules and a warm allocator, and would measure something no
+user experiences. The scoring pass is 117 separate invocations. And on a real
+network rather than `ExactModel`, which is itself RK45 and whose model rollout
+therefore costs about what the reference costs — using it would understate the
+saving for every cell in the matrix.
+
+Extrapolating the measured 97% to the matrix — 117 checkpoints, two scenarios,
+730 windows, where the cold cost is the 57 min measured in J-95 — the scoring
+pass goes from ~107 CPU-hours to roughly **4-5 hours**, which is where
+Amendment 1 budgeted it. The plan's estimate was right all along; only the
+implementation was missing. That last figure is an extrapolation from the 120-
+window measurement, not itself a measurement, and is labelled as one.
+
+---
+
+**The trap, and it is not hypothetical.** `cyclic_endpoint_theta` iterates to a
+fixed point with `tol = 1e-6` and returns as soon as the endpoint stops moving
+by that much — so **where the iteration starts changes the last digits of where
+it stops**. `chi_lifetime_rollout` seeds each window's burn-in from the
+*previous window's answer*, because the seasonal forcing moves ~0.01 degC per
+window and starting inside tolerance costs one cycle instead of six.
+
+The obvious way to precompute a burn-in cache is to loop over the windows and
+seed each one from its own equilibrium. Measured, at 40 windows: that moves
+**39 of 40 values**, worst 8.7e-05 degC. Every one of those values is a
+legitimate fixed point. The cached rollout would then differ from the uncached
+one in the last digits, by an amount far below any threshold anyone would set,
+and nothing downstream would ever flag it.
+
+So `cyclic_endpoint_series` mirrors the rollout's seeding sequence exactly,
+including advancing the seed on a cache *hit* as well as on a miss.
+`39_rollout_cache_identical.py` measures the naive alternative alongside the
+real one, so the reason the sequence is reproduced is visible in the check's
+output rather than only in a comment.
+
+---
+
+**Acceptance is `==`, not `allclose`.** Both integrators are deterministic — the
+J-95 `--exact` residuals reproduced to the last digit across two runs an hour
+apart — so "cached equals uncached" is an exact question, and answering it
+approximately would discard the only property that makes the check conclusive.
+`39_rollout_cache_identical.py`, 24 comparisons, all **0.000e+00**: every
+reference array, every burn-in value, all three rollouts end to end, and
+Amendment 1's gas errors. `40` then shows the same identity surviving the CLI, a
+JSON round trip and a process boundary — the gas errors are byte-identical
+across the cold and both warm runs.
+
+**A stale cache would be the purest silent sentinel this project has met**: a
+well-formed reference for a scenario whose physics had since changed, with every
+model then scored against a quietly wrong truth and nothing downstream able to
+tell. The key therefore includes a **fingerprint of the source that defines the
+reference** — `cod/eval/rollout.py`, `cod/data/physics.py`,
+`cod/data/steady_state.py` — not merely the scenario parameters. It is
+deliberately blunt: a docstring edit invalidates it and costs an hour of
+recompute. The alternative is a cache that survives a change to `fast_rhs_np`,
+and that trade is not close. Check 4 proves the fingerprint moves when the
+hashed set changes and is stable when it does not, and that every file it hashes
+exists — a fingerprint over a missing file hashes the literal `b'<missing>'` and
+would not move when the file came back.
+
+Writes go to a temporary name and are moved into place, so an interrupted write
+cannot leave a half-file that a later run loads as a complete reference.
+
 ### J-95 The primary metric, the missing quadrant cell, and the cell nobody ran
 
 DECISIONS N-12 recorded three holes. All three are closed here. The third was

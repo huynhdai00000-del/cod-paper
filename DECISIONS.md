@@ -1133,3 +1133,28 @@ dùng lại cho cả 112 cell-seed". Kế hoạch đúng, script chưa làm.
 **Không chặn việc train** — train phải xảy ra trước dù thế nào. Việc cần làm
 trước **bước chấm điểm**: lưu lại reference rollout và cyclic cache theo
 `(K, max_windows)` rồi dùng lại giữa các checkpoint.
+
+**ĐÓNG 2026-08-06. `cod/eval/rollout_cache.py`, xem PORT_LOG J-96.** Đo qua CLI
+thật, checkpoint thật, 120 cửa sổ, ba lần chạy subprocess
+(`40_rollout_cache_speedup.py`): **235,5 s nguội → 6,5 s nóng, tiết kiệm 97%,
+nhanh hơn 36 lần**. Ngoại suy sang ma trận (117 checkpoint × 2 kịch bản × 730
+cửa sổ, chi phí nguội 57 phút đã đo ở J-95): bước chấm điểm còn khoảng **4-5
+giờ**, đúng chỗ Amendment 1 dự toán. Kế hoạch đúng ngay từ đầu, chỉ thiếu phần
+triển khai. Con số 4-5 giờ là **ngoại suy**, không phải phép đo.
+
+**Cái bẫy, và nó có thật.** `cyclic_endpoint_theta` lặp tới điểm bất động với
+`tol = 1e-6` và dừng ngay khi điểm cuối thôi dịch chuyển — nên **chỗ bắt đầu lặp
+quyết định vài chữ số cuối của chỗ dừng**. Rollout gieo mỗi cửa sổ từ đáp án của
+cửa sổ *trước*. Cách precompute hiển nhiên — gieo mỗi mục từ cân bằng của chính
+nó — làm **39 trên 40 giá trị** dịch đi, tối đa 8,7e-05 °C. Tất cả đều là điểm
+bất động hợp lệ. Bản cache sẽ lệch bản không cache ở những chữ số cuối, dưới mọi
+ngưỡng ai đó đặt ra, và **không gì ở hạ nguồn phát hiện được**. Vì vậy
+`cyclic_endpoint_series` tái hiện đúng chuỗi gieo hạt của rollout.
+
+**Tiêu chí nghiệm thu là `==`, không phải `allclose`** — hai integrator đều tất
+định. `39_rollout_cache_identical.py`: 24 phép so, tất cả **0,000e+00**.
+
+**Cache cũ sẽ là silent sentinel thuần khiết nhất dự án từng gặp**: một tham
+chiếu đúng định dạng cho một kịch bản mà vật lý đã đổi. Khoá cache vì thế chứa
+**vân tay mã nguồn** của `cod/eval/rollout.py`, `cod/data/physics.py`,
+`cod/data/steady_state.py`, không chỉ tham số kịch bản.

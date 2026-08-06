@@ -67,12 +67,15 @@ sys.path.insert(0, str(ROOT))
 
 from cod.data.physics import DP0, DP_EOL, N_SENSORS, STATE_DIM_FAST, TW  # noqa: E402
 from cod.data.steady_state import true_fixed_point_np  # noqa: E402
-from cod.eval.rollout import (  # noqa: E402
-    chi_lifetime_rollout, reference_rollout,
-)
+from cod.eval.rollout import chi_lifetime_rollout  # noqa: E402
+from cod.eval.rollout_cache import load_or_compute  # noqa: E402
 from cod.models.cod import CODOperator  # noqa: E402
 
 OUT = ROOT / "audit_port" / "ROLLOUT_THERMAL_ERROR.md"
+#: Per-scenario cache of the model-independent half (DECISIONS N-13).
+#: Inside audit_port/, whose .gitignore excludes *.npz, so the cache is
+#: local scratch and never a committed artifact.
+CACHE_DIR = ROOT / "audit_port" / "_rollout_cache"
 K_SCENARIOS = (0.85, 0.95, 1.00, 1.10)
 
 #: The five gases, in the order `fast_rhs_np` carries them, with the IEC 60599
@@ -256,16 +259,22 @@ def eol_months(dp: np.ndarray, years: np.ndarray, reached: bool) -> float | None
     return float((y0 + f * (y1 - y0)) * 12.0)
 
 
-def run_scenario(model, K_base, max_windows, device):
-    """reference / free-running / teacher-forced, over identical forcing."""
-    ref = reference_rollout(K_base, max_windows=max_windows,
-                            steady_state=true_fixed_point_np)
-    n = len(ref.years)
+def run_scenario(model, K_base, max_windows, device, cache_dir=None):
+    """reference / free-running / teacher-forced, over identical forcing.
 
+    The reference rollout and the burn-in cache are **model-independent**, so
+    with `cache_dir` set they are computed once per scenario and reused by every
+    later checkpoint (DECISIONS N-13). `cache_dir=None` computes both, which is
+    what `39_rollout_cache_identical.py` compares the cached path against.
+    """
     # One cache across both model rollouts. The cyclic endpoint depends only on
     # the forcing, so recomputing it for the teacher pass is pure waste — and it
-    # is the dominant cost, several RK45 cycles per distinct (K_w, Ta_w).
-    cyc_cache: dict = {}
+    # is the dominant cost, several RK45 cycles per distinct (K_w, Ta_w). With
+    # `cache_dir` the same reasoning extends one level out, across checkpoints.
+    ref, cyc_cache = load_or_compute(K_base, max_windows,
+                                     steady_state=true_fixed_point_np,
+                                     cache_dir=cache_dir)
+    n = len(ref.years)
     # The model runs to `max_windows`, not to the reference's length. Truncating
     # it at `n` would censor the model's own end of life whenever the reference
     # reaches EOL first — which a cold-biased model guarantees, since it reads DP
@@ -328,6 +337,19 @@ def main() -> int:
     ap.add_argument("--render-from", type=Path, nargs="+", default=None,
                     help="Render the report from previously written JSON rows. "
                          "Combining must not require re-running the rollouts.")
+    ap.add_argument("--cache-dir", type=Path, default=CACHE_DIR,
+                    help="Where the per-scenario reference rollout and burn-ins "
+                         "are cached. They are model-independent, so scoring "
+                         "117 checkpoints recomputed them 117 times — measured "
+                         "at ~107 CPU-hours against the 4.6 the plan budgeted "
+                         "(DECISIONS N-13). The key includes a fingerprint of "
+                         "the source that defines the reference, so editing the "
+                         "physics invalidates it rather than silently reusing "
+                         "the old truth.")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="Compute the reference and the burn-ins in-process, "
+                         "ignoring the cache. This is the path "
+                         "39_rollout_cache_identical.py compares against.")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", type=Path, default=OUT,
                     help="Where to write the report. Defaults to a FIXED path, "
@@ -337,6 +359,7 @@ def main() -> int:
                          "--json-out already varies per run; this is the markdown "
                          "half that did not.")
     args = ap.parse_args()
+    cache_dir = None if args.no_cache else args.cache_dir
 
     if args.render_from:
         rows = []
@@ -384,7 +407,8 @@ def main() -> int:
           f"({args.max_windows * TW / 1440 / 365:.2f} yr), "
           f"K = {scenarios}")
     for K in scenarios:
-        ref, free, teach = run_scenario(model, K, args.max_windows, device)
+        ref, free, teach = run_scenario(model, K, args.max_windows, device,
+                                        cache_dir=cache_dir)
         # The model may outlive the reference now that it is not truncated to it,
         # so the error series are compared over the horizon both cover. The EOL
         # columns below deliberately use each rollout's own length instead.
