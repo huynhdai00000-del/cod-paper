@@ -215,3 +215,37 @@ severely for S-DeepONet, whose trunk was moved from spatial coordinates to time.
 **Seeds are reported as a distribution, not a mean.** Seven seeds, and a
 non-converged seed is reported as non-converged rather than dropped; dropping it
 would select for the seeds that happened to work.
+
+### The aggregator
+
+Every table ANALYSIS_PLAN specifies is built by one script, from the `run.json`
+files alone:
+
+```bash
+python scripts/aggregate_results.py \
+    --results /path/to/cod_matrix \
+    --out audit_port/MATRIX_RESULTS.md
+```
+
+It applies the plan's rules rather than leaving them to be remembered: the
+convergence rate before the error distribution, median and full min-max never a
+mean, §3's two bars with the four pre-approved verdicts, §1's 2x thermal
+confound control before any gas comparison counts, and the 2x2 factorial with
+main effects and the interaction — reported as `n/i`, not as a number, whenever
+a cell of the quadrant is missing.
+
+**It exits non-zero on an integrity problem** and the problems are listed at the
+end of the report: a run that resolves to no cell, two runs of one cell sharing
+a seed, a cell whose runs disagree about the evaluation tier, a run whose
+`converged` flag contradicts its `stop_reason`. Read the exit code — a report
+that renders is not the same as a report that is safe to quote. Runs on a
+distribution other than `fc4cb76c3b32ec17`, and smoke tests, are segregated
+before anything is grouped and counted in §0.
+
+Two things it will not do, both deliberate and both stated in its §7: it prints
+no gas percentage anywhere (C-9), and it does not substitute the 12 h gas MAE
+for Amendment 1's end-of-rollout gas ppm, which no script currently emits.
+
+`audit_port/scripts/37_aggregator_sentinel_check.py` is its verification: the
+J-89 checklist including step 6, run against synthetic run directories built to
+be degenerate. Run it after touching either file.

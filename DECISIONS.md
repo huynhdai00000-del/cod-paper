@@ -1054,3 +1054,30 @@ tụ**. Đường rẻ nhất là retrain `CODNoBaseline` trên phân phối fix
 ngân sách của COD rồi chạy lại script này — một lần train. Nếu vẫn không hội tụ
 dưới ngân sách công bằng thì báo cáo đó là kết quả hội tụ và bỏ tuyên bố
 spectral bias, không dựa nó lên checkpoint hỏng.
+
+**N-12. Ba lỗ hổng trong bộ ô đã khai báo, phát hiện 2026-08-06 khi dựng
+aggregator.** Không mâu thuẫn với C-11 hay ANALYSIS_PLAN — chúng là chỗ mà hai
+tài liệu đã chốt **không khớp với những gì thực sự chạy được**. Ghi lại để là lỗ
+hổng đã biết chứ không phải lỗ hổng im lặng. Bảng coverage của
+`scripts/aggregate_results.py` in cả ba ra mỗi lần chạy.
+
+1. **Ô 2 của PI-DeepONet không tồn tại.** Ma trận giai thừa 2×2 cần
+   `MonolithicFair` **không** baseline giải tích. J-92 gọi tên nó ("cell 2 is
+   MonolithicFair") nhưng không có config nào trong `configs/matrix/`. Hệ quả:
+   góc phần tư PI-DeepONet có 3 trên 4 ô, nên **không tách được** main effect
+   của baseline khỏi main effect của cascade — chỉ còn simple effect.
+2. **COD không nằm trong runbook.** ANALYSIS_PLAN §4 yêu cầu COD và Ablation A
+   nhận đúng 7 seed như mọi baseline ("một phương pháp chính ở một seed đấu với
+   baseline ở bảy seed là bất đối xứng làm hỏng phép so"). Hai vòng lặp trong
+   `scripts/matrix_runbook.md` liệt kê 15 config của `configs/matrix/`; `cod`
+   dùng `configs/example_cod_seed1.yaml` và **không có dòng nào chạy nó**. Hiện
+   COD vẫn n = 1 (O-5).
+3. **Chỉ số chính của Amendment 1 chưa có script nào sinh ra.** Amendment 1
+   (2026-08-04) chuyển chỉ số chính sang **ppm khí cuối rollout 2 năm** tại
+   K = 0,95 và 1,10. `24_rollout_thermal_error.py` ghi bias nhiệt, DP và EOL —
+   **không ghi nồng độ khí**. Nên H1 chưa quyết định được từ bất kỳ artifact nào
+   đang có, và aggregator báo đúng điều đó thay vì lặng lẽ trình bày MAE khí 12 h
+   (thứ Amendment 1 đã hạ xuống thứ yếu) như thể là chỉ số chính.
+
+Cả ba đều là việc phải làm trước khi ma trận cho ra kết luận, không phải lý do
+mở lại quyết định nào. Xem PORT_LOG J-94.

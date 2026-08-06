@@ -32,6 +32,7 @@ import torch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from cod.cells import cell_factors
 from cod.config import load_config
 from cod.data.generate import (build_realistic_test_set, build_test_set,
                                generate_realistic_training_set,
@@ -507,6 +508,12 @@ def main() -> int:
     extra = {
         "status": "smoke_test" if smoke else "run",
         "training_loop": loop,
+        # Which factorial cell this run is, derived from the config's own model
+        # block rather than from the directory name. `model_kind` below does not
+        # identify the cell — the with-baseline hybrids share it with their
+        # without-baseline partners — so an aggregator that grouped by it would
+        # pool two cells (cod/cells.py).
+        "cell": cell_factors(cfg.raw).to_dict(),
         "model_kind": cfg["model"]["kind"],
         "model_parameters": model.n_parameters(),
         "n_ic": len(ts),

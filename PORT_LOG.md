@@ -1624,6 +1624,142 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-94 J-93 re-verified from scratch, and the aggregator that reads the matrix
+
+Two pieces of work, and the first exists because the second depends on it: an
+aggregator over 105 run directories is worth nothing if the seven seeds in each
+cell are one seed run seven times.
+
+---
+
+#### 1. `--seed` verified independently, not taken on trust
+
+`36_seed_flag_independent_check.py`. J-93's claim was re-established from
+scratch rather than read: two production runs of `mionet_in_cascade`, seeds 11
+and 12, `--max-wall-seconds 40 --n-test 20` as the only other overrides.
+
+| check | result |
+|---|---|
+| config hash identical | `b23cd5d8fa43ff88` — what makes the pair a seed sweep |
+| distribution hash identical | `fc4cb76c3b32ec17` |
+| `status` | **`run`** on both, not `smoke_test` |
+| weight tensors differing | **26 of 35**, max abs diff 1.994 on `core.trunk.0.weight` |
+| loss at step 0 | differs by 1.8e-03; max over the common 28 epochs 1.504 |
+
+The nine tensors that do **not** differ are every non-trainable buffer and only
+those: `tau`, `xm`, `xs`, `x_mean_TO`, `x_std_TO`, `t_grid`, and the three
+Arrhenius constant buffers. Normalisation statistics come from the dataset,
+which is drawn with `distribution.seed = 42` in both runs, so they are *supposed*
+to match; a differing `xm` would mean the two runs saw different training data
+and were not a seed sweep at all. Every trainable tensor differs.
+
+**Batch order was isolated separately, because the end-to-end run cannot show
+it.** Identical weights loaded into both trainers via `load_state_dict`, so
+initialisation is constant by construction: the first three drawn batches differ,
+max abs diff 6032 on the drawn `x0` (a CO2 channel, ppm) and 31.77 on the
+sensors. Two seeds that differed only in initialisation would still diverge at
+step 0, so step-0 divergence is consistent with the bug being present — that is
+what makes this the test the run cannot substitute for.
+
+**And a control the previous session's account did not have.** Two trainers
+built with the *same* seed must draw bit-identical batches: 3/3 identical, max
+diff exactly 0. Without it, a comparison that always reports a difference would
+pass the check above while measuring nothing. J-89 step 5 asks whether a gate
+can fail; here the question is whether it can *pass* when it should.
+
+J-93 holds, on all three points.
+
+---
+
+#### 2. `scripts/aggregate_results.py`
+
+Reads every `run.json` under a directory and emits the ANALYSIS_PLAN tables:
+per-cell convergence rate before error distribution, median and full min-max
+never a mean, §3's two bars with the four pre-approved verdicts, §1's 2x thermal
+confound control, and the 2x2 factorial per architecture. Verified by
+`37_aggregator_sentinel_check.py` — the J-89 checklist including step 6, run
+against synthetic run directories built to be degenerate, 30 assertions.
+
+**Four decisions worth recording.**
+
+*The cell is not the directory name and not `model_kind`.* Both fail on the
+factorial: `fno_in_cascade` and `fno_baseline_in_cascade` share a `model_kind`,
+`cod` and `cod_bounded_correction` share one too, and `run.py` builds the
+directory as `{name}_{variant}_s{seed}_{hash}[_smoke][_tag]` where both `name`
+and `variant` may contain underscores, so it does not parse back. Grouping by
+either would silently pool two factorial cells. `cod/cells.py` derives the cell
+from the same model block `run.py` reads to build the model, `Config.summary()`
+now writes `variant` into `run.json`, and `run.py` writes the whole `cell` block.
+Older runs — every one in `artifacts/` — resolve by config hash against the local
+config tree, and a run that resolves by neither is reported **unresolved** and
+enters no table.
+
+*Matrix membership is the frozen distribution hash, not a list of names.* A
+config or a run on any distribution other than `fc4cb76c3b32ec17` is segregated
+before anything is grouped. This keeps `configs/v57_faithful.yaml` out of the
+declared cell set without naming it — and it had to, because `v57_faithful` and
+`cod` are both PI-DeepONet, in-cascade, with baseline, i.e. the same factorial
+slot.
+
+*A main effect is not a simple effect, and a partial quadrant yields only the
+second.* With a cell missing, the main effects and the interaction read `n/i`,
+never a number: a main effect is an average over the other factor's levels and
+the interaction is a difference of differences, so both need all four cells.
+What the aggregator does report from a partial quadrant is the four **simple**
+effects under their own name. On `artifacts/` this is the difference between
+reporting "main effect of the baseline: −2.14 degC" and the true statement,
+"simple effect of the baseline **at in-cascade**: −2.14 degC" — the O-12 result,
+which says nothing about what the baseline is worth to a monolithic model
+because no such cell exists.
+
+*Bar (b) is refused below three converged seeds a side.* §3's seed-separation
+bar is "the min-max ranges must not overlap". At n = 1 the range is a point and
+two distinct points never overlap, so the bar would pass on no variance at all —
+a plausible verdict for an undefined input, J-89 Form A exactly. Such a
+comparison reads "insufficient seeds for a separation claim" and reports bar (a)
+alone.
+
+**Two things it refuses to print, both stated in the report itself.** No gas
+percentage anywhere (C-9), self-checked against the rendered markdown. And no
+substitute for ANALYSIS_PLAN Amendment 1's primary metric — end-of-rollout gas
+ppm at K = 0.95 and 1.10 — which **no script in the repo emits**:
+`24_rollout_thermal_error.py` writes thermal bias, DP and EOL, not gas
+concentrations. Filling that column with the 12 h gas MAE would reinstate the
+metric Amendment 1 demoted, for the reason it demoted it. **H1 is therefore not
+yet decidable from any artifact that exists**, and the report says so in its §7
+rather than quietly presenting the secondary comparison as the primary one.
+
+**Two defects the sentinel check found in the aggregator, both fixed.** It did
+not verify that `converged` agrees with `stop_reason` — the harness sets both at
+one place, so a run where they disagree is one whose convergence cannot be read,
+and it would have entered or been excluded from a median on the wrong flag. And
+the C-9 self-check was initially strict enough to fire on its own §7 prose
+explaining why gas NMAE is absent; it now checks table rows, since a table cell
+is what gets quoted.
+
+**What it found on the four real runs in `artifacts/`.** `artifacts/fno` and
+`artifacts/fno2` are both seed 1 of `fno_in_cascade` — the pre- and
+post-clamp-fix runs — so the cell reports **duplicate seeds** and the
+aggregation exits non-zero. That is the right answer: two runs of one seed are
+not two seeds, and a min-max across them is a range across a code change.
+
+---
+
+#### 3. A hole in the declared cell set, surfaced by the coverage table
+
+The PI-DeepONet row of the factorial has cell 1
+(`pideeponet_baseline_monolithic`), cell 3 (`cod`) and cell 4
+(`cod_no_baseline`) — but **no cell 2**. `MonolithicFair` without the analytic
+baseline has no config under `configs/matrix/`, and J-92 names it as cell 2, so
+the intent is on the record and the config is not. Separately, `cod` itself
+appears in **neither** loop of the runbook, while ANALYSIS_PLAN §4 requires COD
+to get the same 7 seeds as every baseline.
+
+Not fixed here: adding a config and a runbook line is a change to what gets
+trained, and it belongs in its own commit rather than inside one that builds a
+reporting tool. Recorded so it is a known hole rather than a silent one — and
+the coverage table now prints it on every run.
+
 ### J-93 `--seed`, and the loop variable that changed only the directory name
 
 The matrix runbook looped `for SEED in 1 2 3 4 5 6 7` and passed `--tag s$SEED`.

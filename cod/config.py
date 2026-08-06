@@ -58,10 +58,21 @@ class Config:
         return self.raw.get(key, default)
 
     def summary(self) -> dict:
+        #: `experiment.variant` is the cell identity and it has to travel in the
+        #: record, not only in the directory name. `model.kind` cannot stand in
+        #: for it: the factorial's with-baseline cells share a `kind` with their
+        #: without-baseline partners (`fno_in_cascade` is both
+        #: `fno_in_cascade` and `fno_baseline_in_cascade`), and
+        #: `cod_bounded_correction` shares `kind: cod` with COD itself. Without
+        #: the variant an aggregator can only recover the cell by re-hashing the
+        #: local config tree, which fails the moment a result is read on a
+        #: machine where that file has moved (PORT_LOG J-92, J-94).
         return {
             "config_path": str(self.path),
             "config_hash": self.hash,
             "distribution_hash": self.distribution_hash,
+            "experiment_name": self.raw["experiment"].get("name"),
+            "variant": self.raw["experiment"].get("variant"),
         }
 
 
