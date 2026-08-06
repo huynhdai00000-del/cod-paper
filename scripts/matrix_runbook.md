@@ -47,10 +47,13 @@ failure repeated.
 !python audit_port/scripts/25_checkpoint_roundtrip.py --max-epochs 15 --n-ic 24 --n-test 6
 ```
 
-Expect `8/8 architectures round-trip their checkpoints correctly` — COD plus the
-seven configs in `configs/matrix/`. Any `FAIL` line names the config that failed;
-fix before proceeding. One failing cell no longer aborts the rest, so the summary
-at the end is complete even when something breaks.
+Expect `17/17 architectures round-trip their checkpoints correctly` — COD
+(`configs/example_cod_seed1.yaml`) plus the sixteen configs in
+`configs/matrix/`. The count is `1 + len(glob("configs/matrix/*.yaml"))` and
+moves when a cell is added, so read it against what the directory holds rather
+than against a number written here. Any `FAIL` line names the config that
+failed; fix before proceeding. One failing cell no longer aborts the rest, so
+the summary at the end is complete even when something breaks.
 
 ---
 
@@ -95,6 +98,24 @@ for CFG in fno_in_cascade fno_monolithic \
 done
 ```
 
+**COD itself is in this sweep and its config is not under `configs/matrix/`.**
+`configs/example_cod_seed1.yaml` is the COD cell — factorial cell 3 for
+PI-DeepONet — and ANALYSIS_PLAN §4 requires it at the same seven seeds as every
+baseline: *"a headline method at one seed against baselines at seven is an
+asymmetry that invalidates the comparison."* It was absent from every loop in
+this file until 2026-08-06, which is how it stayed at n = 1.
+
+```bash
+for SEED in 1 2 3 4 5 6 7; do
+  python scripts/run.py --config configs/example_cod_seed1.yaml \
+      --freeze-hash fc4cb76c3b32ec17 \
+      --max-wall-seconds 10800 \
+      --seed $SEED \
+      --tag s$SEED \
+      --out /content/drive/MyDrive/cod_matrix
+done
+```
+
 > **Both `--seed $SEED` and `--tag s$SEED` are required, and they do different
 > jobs.** `--tag` names the output directory; `--seed` changes what is computed.
 > An earlier version of this loop had only `--tag`, which meant all seven runs
@@ -112,15 +133,15 @@ done
 
 ### The factorial and variant cells
 
-The loop above is the six-cell matrix plus Ablation A. The 2×2 factorial cells
-(PORT_LOG J-92) and the bounded-correction variant (ANALYSIS_PLAN Amendment 2)
-are eight further configs, run the same way:
+The loops above are the six-cell matrix plus Ablation A plus COD. The 2×2
+factorial cells (PORT_LOG J-92) and the bounded-correction variant
+(ANALYSIS_PLAN Amendment 2) are nine further configs, run the same way:
 
 ```bash
 for CFG in fno_baseline_in_cascade fno_baseline_monolithic \
            mionet_baseline_in_cascade mionet_baseline_monolithic \
            sdeeponet_baseline_in_cascade sdeeponet_baseline_monolithic \
-           pideeponet_baseline_monolithic \
+           pideeponet_baseline_monolithic pideeponet_monolithic \
            cod_bounded_correction; do
   for SEED in 1 2 3 4 5 6 7; do
     python scripts/run.py --config configs/matrix/$CFG.yaml \
@@ -148,6 +169,10 @@ one cell.
    on the same seeds. One seed is enough to be informative, seven to be
    reportable. It uses `loop: train_v34`, COD's own trainer, because a different
    trainer would be a second variable.
+5. `pideeponet_monolithic` + `pideeponet_baseline_monolithic` — the pair that
+   completes the PI-DeepONet quadrant. Both carry J-8 (`ne` shadowed to 12)
+   **equally**, so the baseline contrast within the pair is valid; comparing
+   either against COD's cells is what J-8 affects.
 
 **After each run, check three things before moving on:**
 
@@ -189,10 +214,19 @@ Locally, after pulling the Drive directory:
 # variable did not reach the computation, here it does not reach the output path.
 python audit_port/scripts/18_swing_fidelity.py --checkpoint <run>/model.pt \
     --out <run>/swing_fidelity.md
+# BOTH scenarios: ANALYSIS_PLAN Amendment 1 names K = 0.95 AND K = 1.10, and the
+# aggregator ignores any other scenario rather than relabelling it. Scoring only
+# 0.95 leaves half the primary metric missing and the report will say so.
 python audit_port/scripts/24_rollout_thermal_error.py --checkpoint <run>/model.pt \
-    --max-windows 730 --k-scenarios 0.95 --json-out <run>/rollout.json \
+    --max-windows 730 --k-scenarios 0.95 1.10 --json-out <run>/rollout.json \
     --out <run>/rollout_thermal_error.md
 ```
+
+**`rollout.json` is not optional.** It is the only place ANALYSIS_PLAN
+Amendment 1's **primary** metric exists — end-of-rollout gas concentration in
+ppm — and `run.json` does not carry it. A run without one contributes nothing to
+the primary tables, and the aggregator reports H1 as undecided rather than
+promoting the demoted 12 h gas MAE in its place.
 
 C-11 requires every model to report **three** things, not one:
 

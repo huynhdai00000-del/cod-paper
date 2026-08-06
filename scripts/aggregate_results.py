@@ -20,6 +20,9 @@ What it produces, and where each rule comes from:
     min-max — with the four pre-approved verdict phrasings and no upgrading;
   * **the mandatory 2x thermal confound control** (§1) applied before any gas
     comparison counts toward H1;
+  * **H1 on Amendment 1's primary metric** — end-of-rollout gas ppm at K = 0.95
+    and K = 1.10, read from `<run>/rollout.json` — with the 12 h gas MAE kept
+    but reported separately as secondary, under Amendment 1's own reasoning;
   * **the 2x2 factorial** per architecture with both main effects and the
     interaction (J-92, Amendment 1).
 
@@ -34,11 +37,11 @@ Three things it deliberately refuses to do:
     disjoint unless exactly equal, so bar (b) would pass on nothing at all —
     a plausible verdict for an undefined input, i.e. J-89 Form A. Such a
     comparison is reported as insufficient, not as separable.
-  * **No substitute for a metric it does not have.** ANALYSIS_PLAN Amendment 1
-    makes end-of-rollout gas ppm the primary metric; no script in the repo
-    currently emits it (`24_rollout_thermal_error.py` writes thermal bias and
-    DP, not gas). It is reported as unavailable rather than quietly replaced by
-    the 12 h gas MAE, which Amendment 1 demoted for a stated reason.
+  * **No substitute for a metric a run has not been scored on.** ANALYSIS_PLAN
+    Amendment 1 makes end-of-rollout gas ppm the primary metric; it comes from
+    `<run>/rollout.json`, written by `24_rollout_thermal_error.py --json-out`.
+    A run without that file contributes nothing to the primary tables rather
+    than a zero, and the demoted 12 h gas MAE is never promoted in its place.
 
 Exit: 0 if the aggregation is clean, 1 if any integrity problem was found —
 a run that resolves to no cell, duplicate seeds inside a cell, a cell whose
@@ -92,6 +95,26 @@ METRICS = [
 ]
 THERMAL = METRICS[0]
 GASES = [m for m in METRICS if m.kind == "gas"]
+
+#: ANALYSIS_PLAN Amendment 1's primary metric: absolute gas concentration error
+#: in ppm at the end of the rollout, at these two scenarios. Produced by
+#: `24_rollout_thermal_error.py --json-out <run>/rollout.json`, which is the
+#: only place it exists — nothing in `run.json` carries it.
+#:
+#: Same floors as the 12 h gas MAE, because Amendment 1 substitutes the metric
+#: and leaves §3 otherwise unchanged: "the two bars in §3 ... applies unchanged
+#: with the metric substituted".
+ROLLOUT_SCENARIOS = (0.95, 1.10)
+
+
+def rollout_key(K: float, gas: str) -> str:
+    return f"rollout_K{K:.2f}_{gas}"
+
+
+ROLLOUT_METRICS = [
+    Metric(rollout_key(K, g.key), "ppm", g.threshold, g.floor, "rollout")
+    for K in ROLLOUT_SCENARIOS for g in GASES
+]
 
 #: DISTRIBUTION_FREEZE.md §1. A run trained on a different distribution is not
 #: a cell of this matrix and cannot be compared with one, so the frozen hash is
@@ -163,6 +186,46 @@ def _registry() -> dict:
     return reg
 
 
+def _read_rollout(run_dir: Path) -> dict:
+    """Amendment 1's primary metric, from `<run>/rollout.json` if it is there.
+
+    Written by `24_rollout_thermal_error.py --json-out`. Absent for a run that
+    has not been scored yet, and absence stays absence: an unscored run must not
+    contribute a zero to a median, which is a perfect cell wearing a plausible
+    number (J-89 step 2).
+
+    The stored quantity is signed (`model - reference`). What the two bars are
+    applied to is its **magnitude**: H1 is about which configuration ends the
+    rollout closer to the right concentration, and a cell whose seeds straddle
+    zero would otherwise get a median near zero for being inconsistent.
+    """
+    p = run_dir / "rollout.json"
+    if not p.is_file():
+        return {}
+    try:
+        rows = json.loads(p.read_text(encoding="utf-8")).get("rows", [])
+    except Exception:
+        return {}
+    out = {}
+    known = {m.key for m in GASES}
+    for r in rows:
+        K = r.get("K")
+        err = r.get("gas_err")
+        names = r.get("gas_names")
+        # Zipped by NAME, from the names the producer wrote alongside the
+        # values. Zipping against this file's own gas list would depend on two
+        # orderings in two files staying in step for ever.
+        if K is None or not isinstance(err, list) or not isinstance(names, list):
+            continue
+        if len(names) != len(err) or not any(abs(K - s) < 1e-9
+                                             for s in ROLLOUT_SCENARIOS):
+            continue
+        for name, e in zip(names, err):
+            if name in known:
+                out[rollout_key(float(K), name)] = abs(float(e))
+    return out
+
+
 def read_run(path: Path, reg: dict) -> Run:
     j = json.loads(path.read_text(encoding="utf-8"))
     cfgblk = j.get("config", {})
@@ -176,6 +239,7 @@ def read_run(path: Path, reg: dict) -> Run:
         # 0.0, which would read as a perfect cell (J-89 step 2).
         if isinstance(d, dict) and isinstance(d.get("mae"), (int, float)):
             mae[m.key] = float(d["mae"])
+    mae.update(_read_rollout(path.parent))
 
     cell, reason = None, None
     if isinstance(j.get("cell"), dict):
@@ -481,7 +545,7 @@ def build_report(runs: list, results_dir: Path) -> tuple:
         w(f"**{len(missing)} declared cell(s) have no production run:** "
           + ", ".join(f"`{v}`" for v in sorted(missing)) + ".")
         w("")
-    w(_pideeponet_hole_note())
+    w(_declared_quadrant_note(expected))
     w("")
 
     # ── per cell ─────────────────────────────────────────────────────────────
@@ -536,18 +600,106 @@ def build_report(runs: list, results_dir: Path) -> tuple:
               f"{_fmt(s[1], m.unit)} | {_fmt(s[2], m.unit)} | {s[3]} |")
         w("")
 
-    # ── H1 ───────────────────────────────────────────────────────────────────
-    w("## 3. H1 — the cascade, within an architecture")
+    # ── H1, primary ──────────────────────────────────────────────────────────
+    w("## 3. H1 (PRIMARY) — the cascade, on end-of-rollout gas ppm")
     w("")
-    w("Four tests, one per architecture, declared in §1 before any run. The "
-      "pair is `in_cascade` against `monolithic` **at the same baseline "
-      "level**, which is what makes it a one-variable test. §1's control comes "
-      "first: if the two configurations do not predict `theta_TO` comparably, "
-      "gas error inherits thermal error through `V_arr`, which is exponential "
-      "in temperature, and the gas comparison is confounded.")
+    w("ANALYSIS_PLAN Amendment 1: the primary metric is **gas concentration "
+      "error in ppm at the end of the rollout**, scenarios K = 0.95 and "
+      "K = 1.10, scored against IEC 60599. Four tests, one per architecture, "
+      "the pair being `in_cascade` against `monolithic` **at the same baseline "
+      "level**.")
     w("")
-    w("**The metric below is the 12 h gas MAE, which Amendment 1 demoted to "
-      "secondary.** See §6 for why the primary metric is not in this report.")
+    w("Why this and not the 12 h window: gases obey "
+      "`dc/dt = k_gen V_arr(theta) - k_dis c`, so they relax toward an "
+      "equilibrium set by temperature. An in-cascade model reaches the correct "
+      "one by construction; a monolithic model has no such constraint and a "
+      "wrong equilibrium persists indefinitely. That is a structural claim "
+      "about long-horizon behaviour, and 12 hours is too short for anything to "
+      "accumulate.")
+    w("")
+    w("The value per seed is `|model - reference|` in ppm at the last window "
+      "both rollouts cover. It comes from `<run>/rollout.json`, written by "
+      "`24_rollout_thermal_error.py --json-out`; a run without that file "
+      "contributes nothing here rather than a zero.")
+    w("")
+    n_primary = sum(1 for c in cells.values()
+                    for m in ROLLOUT_METRICS if c.stat(m.key))
+    # Counted over ALL seeds, converged or not, so "nobody ran the rollout" and
+    # "the rollout ran but on seeds that did not converge" are distinguishable.
+    # They call for different actions and the same sentence would hide it.
+    n_scored = sum(1 for c in cells.values() for r in c.runs
+                   if any(m.key in r.mae for m in ROLLOUT_METRICS))
+    if n_primary == 0:
+        if n_scored == 0:
+            w("**No run in this directory has been scored on the primary "
+              "metric.** Every cell needs `24_rollout_thermal_error.py "
+              "--json-out <run>/rollout.json --k-scenarios 0.95 1.10`.")
+        else:
+            w(f"**{n_scored} run(s) carry a `rollout.json`, but none of them "
+              "converged**, so none contributes a number here. A "
+              "non-converged model is reported as non-converged, not "
+              "converted into a performance figure (README rule 5) — and that "
+              "applies to the primary metric exactly as it does to the rest.")
+        w("")
+        w("§4 below is the *secondary* comparison and does not substitute for "
+          "this one: Amendment 1 demoted the 12 h gas MAE for a stated "
+          "reason, and reading it as the primary result would undo that "
+          "decision silently. **H1 is undecided.**")
+        w("")
+    else:
+        for arch in _architectures(cells):
+            for baseline in (False, True):
+                a = _find(cells, arch, True, baseline, problems)
+                b = _find(cells, arch, False, baseline, problems)
+                lvl = "with baseline" if baseline else "no baseline"
+                w(f"### {arch}, {lvl}")
+                w("")
+                if a is None or b is None:
+                    have = [x.factors.variant for x in (a, b) if x]
+                    w(f"*Pair incomplete — present: "
+                      f"{', '.join(have) if have else 'neither cell'}. "
+                      "No test.*")
+                    w("")
+                    continue
+                ok, why = confound_check(a, b)
+                w(f"- in-cascade: `{a.factors.variant}` "
+                  f"({a.conv_rate} converged)")
+                w(f"- monolithic: `{b.factors.variant}` "
+                  f"({b.conv_rate} converged)")
+                w(f"- §1 control: {why} → "
+                  + ("**CONFOUNDED, counts toward H1 in neither direction**"
+                     if ok is False else
+                     "not evaluable" if ok is None else "control passed"))
+                w("")
+                # No literal pipes in the header text: `|model-ref|` would be
+                # read as two extra column separators and the table would
+                # render with its columns out of step with the separator row.
+                w("| K | gas | in-cascade abs err ppm | monolithic abs err "
+                  "ppm | delta | bar (a) | bar (b) | verdict |")
+                w("|---|---|---|---|---|---|---|---|")
+                for K in ROLLOUT_SCENARIOS:
+                    for g in GASES:
+                        m = next(x for x in ROLLOUT_METRICS
+                                 if x.key == rollout_key(K, g.key))
+                        cp = compare(a, b, m)
+                        w(f"| {K:.2f} | {g.key} | {_cellstat(a, m)} | "
+                          f"{_cellstat(b, m)} | "
+                          f"{'—' if cp.delta is None else _fmt(cp.delta, 'ppm')}"
+                          f" | {_bar(cp.bar_a)} | {_bar(cp.bar_b)} | "
+                          f"{cp.verdict} |")
+                w("")
+
+    # ── H1, secondary ────────────────────────────────────────────────────────
+    w("## 4. H1 (SECONDARY) — the same test on 12 h gas MAE")
+    w("")
+    w("Kept, demoted, with its reason attached so its negligibility reads as "
+      "expected rather than as a finding: it is what the training loss targets, "
+      "so a model bad at it will be bad at rollout, and it is the honest place "
+      "to show that the short-horizon differences are real but operationally "
+      "irrelevant. Amendment 1's own figures — MIONet `c_C2H2` MAE 8.6e-05 ppm "
+      "against a 35 ppm IEC attention level — are why every architecture is "
+      "pre-destined to return \"statistically separable, operationally "
+      "negligible\" here.")
     w("")
     for arch in _architectures(cells):
         for baseline in (False, True):
@@ -585,7 +737,7 @@ def build_report(runs: list, results_dir: Path) -> tuple:
                 w("")
 
     # ── S1 thermal ───────────────────────────────────────────────────────────
-    w("## 4. S1 — thermal MAE, in-cascade against monolithic")
+    w("## 5. S1 — thermal MAE, in-cascade against monolithic")
     w("")
     w("The §1 control reported in its own right. Both configurations predict "
       "`theta_TO` with the same network capacity, so this is not where the "
@@ -613,7 +765,7 @@ def build_report(runs: list, results_dir: Path) -> tuple:
     w("")
 
     # ── factorial ────────────────────────────────────────────────────────────
-    w("## 5. The 2x2 factorial — cascade x analytic baseline")
+    w("## 6. The 2x2 factorial — cascade x analytic baseline")
     w("")
     w("Cell numbering is J-92's: 1 = monolithic with baseline, 2 = monolithic "
       "without, 3 = in-cascade with baseline, 4 = in-cascade without. A "
@@ -687,7 +839,7 @@ def build_report(runs: list, results_dir: Path) -> tuple:
             w("")
 
     # ── Amendment 2 ──────────────────────────────────────────────────────────
-    w("## 6. Amendment 2 — the bounded-correction COD variant")
+    w("## 7. Amendment 2 — the bounded-correction COD variant")
     w("")
     cod = cells.get("cod")
     bnd = cells.get("cod_bounded_correction")
@@ -717,15 +869,13 @@ def build_report(runs: list, results_dir: Path) -> tuple:
         w("")
 
     # ── what is not here ─────────────────────────────────────────────────────
-    w("## 7. What this report does not contain, and why")
+    w("## 8. What this report does not contain, and why")
     w("")
-    w("1. **The Amendment 1 primary metric — end-of-rollout gas ppm at "
-      "K = 0.95 and K = 1.10 — is not here.** No script in the repo emits it: "
-      "`24_rollout_thermal_error.py` writes thermal bias, DP and EOL, not gas "
-      "concentrations, so its `rollout.json` cannot supply it. Substituting "
-      "the 12 h gas MAE would reinstate exactly the metric Amendment 1 "
-      "demoted, for the reason it demoted it. §3 above is therefore the "
-      "**secondary** comparison, labelled as such, and H1 is not yet decided.")
+    w("1. **Nothing is substituted for a metric a run has not been scored "
+      "on.** A run without `rollout.json` contributes nothing to §3 rather "
+      "than a zero, and §4 is never promoted in its place — Amendment 1 "
+      "demoted the 12 h gas MAE for a stated reason, and reading it as the "
+      "primary result would undo that decision silently.")
     w("2. **Gas NMAE appears nowhere** (C-9, tightened 2026-08-02). Median 12 h "
       "gas variation is 0.001%-0.046% of each gas's engineering threshold, so "
       "a gas percentage is a ratio to a physically empty quantity. `theta_TO` "
@@ -864,16 +1014,39 @@ def _expected_cells() -> dict:
     return out
 
 
-def _pideeponet_hole_note() -> str:
-    return (
-        "**A hole in the declared set, not in the results.** The PI-DeepONet "
-        "row of the factorial has cells 1 (`pideeponet_baseline_monolithic`), "
-        "3 (`cod`) and 4 (`cod_no_baseline`), but **no cell 2** — "
-        "`monolithic_fair` without the analytic baseline — has a config under "
-        "`configs/matrix/`, and `cod` itself appears in no runbook loop. "
-        "J-92 names cell 2 as MonolithicFair, so the intent exists; the config "
-        "and the runbook line do not. Until both exist the PI-DeepONet "
-        "quadrant cannot be completed and its main effects are not identified.")
+def _declared_quadrant_note(expected: dict) -> str:
+    """Is any architecture's 2x2 incomplete in the CONFIG SET, not the results?
+
+    Derived, not written down. This began as a hardcoded paragraph about
+    PI-DeepONet having no cell 2 — true when it was written, false the moment
+    the config was added, and a report that states a closed hole on every run is
+    worse than one that states nothing. Deriving it means a future architecture
+    added with three of its four cells is caught the same way, and means this
+    note cannot outlive the condition it describes.
+
+    A missing *config* is a different and worse thing than a missing *run*: no
+    amount of compute fixes it, and it is what makes a main effect
+    unidentifiable no matter how many seeds finish.
+    """
+    by_arch: dict = {}
+    for f in expected.values():
+        if f.in_factorial:
+            by_arch.setdefault(f.architecture, set()).add(f.cell_number)
+    holes = {a: sorted({1, 2, 3, 4} - ns) for a, ns in by_arch.items()
+             if len(ns) < 4}
+    if not holes:
+        return ("Every architecture has all four factorial cells declared as a "
+                "config, so no quadrant is incomplete for want of a cell to "
+                "run. What is missing below is runs, which compute fixes.")
+    parts = ["**A hole in the declared set, not in the results.** No amount of "
+             "compute closes this one: an architecture missing a *config* "
+             "cannot have that cell run at all, and a partial quadrant leaves "
+             "both main effects and the interaction unidentifiable."]
+    for a, missing in sorted(holes.items()):
+        parts.append(f"**{a}** is missing factorial cell(s) "
+                     + ", ".join(str(n) for n in missing)
+                     + f" (has {sorted(by_arch[a])}).")
+    return "  \n".join(parts)
 
 
 def main() -> int:

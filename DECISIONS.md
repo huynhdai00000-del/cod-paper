@@ -1081,3 +1081,55 @@ hổng đã biết chứ không phải lỗ hổng im lặng. Bảng coverage c�
 
 Cả ba đều là việc phải làm trước khi ma trận cho ra kết luận, không phải lý do
 mở lại quyết định nào. Xem PORT_LOG J-94.
+
+**ĐÓNG CẢ BA 2026-08-06. Xem PORT_LOG J-95.**
+
+1. **Ô 2 của PI-DeepONet: xong.** `configs/matrix/pideeponet_monolithic.yaml`.
+   Không cần code — `MonolithicFair` đã nhận `use_baseline` và `run.py` đã
+   truyền nó. Đo: cả hai ô monolithic của PI-DeepONet đều **156.498 tham số** và
+   đều thoả IC chính xác, nên baseline là biến duy nhất. Cả hai mang J-8 **như
+   nhau**, đó là lý do không sửa J-8 ở một ô. Góc phần tư PI-DeepONet lần đầu
+   tiên đầy đủ, tức main effect và interaction lần đầu tiên **tách được**.
+2. **COD vào runbook: xong.** Nguyên nhân đáng ghi: hai vòng lặp duyệt
+   `configs/matrix/*.yaml`, mà config của COD là `configs/example_cod_seed1.yaml`
+   — **không nằm trong tập được duyệt**. Khác hình dạng với J-93: ở đó biến vòng
+   lặp tới được đường dẫn mà không tới được phép tính; ở đây phần tử chưa bao giờ
+   ở trong vòng lặp. Cả hai để lại một bộ kết quả trông đầy đủ.
+3. **Chỉ số chính của Amendment 1: có rồi.** `24_rollout_thermal_error.py` phát
+   ra `gas_end` — nồng độ khí ppm cuối rollout, cho cả model lẫn tham chiếu — và
+   `scripts/aggregate_results.py` đọc `<run>/rollout.json` rồi áp hai thanh chắn
+   §3 lên nó ở mục **§3 PRIMARY**, hạ MAE khí 12 h xuống **§4 SECONDARY**. Cổng
+   `--exact` kiểm cả hai chiều: `--inject-gas-bias 0.5` cho **+19,97 ppm** trên
+   cả năm khí sau 40 cửa sổ và trả exit 1.
+
+   Đại lượng này **vốn đã được tính rồi vứt đi**: rollout mang cả sáu state qua
+   từng cửa sổ, chỉ `theta_TO` được giữ lại.
+
+   Kèm theo, hai lỗi phải sửa để chỉ số này dùng được cho ma trận:
+   `24` chỉ dựng được `CODOperator` (tức dùng được cho 1 trên 17 ô), và toàn bộ
+   nhánh xuất markdown của nó chết vì `NameError`.
+
+**Seed đã có, không chạy lại** (`38_reusable_seed_audit.py`,
+`audit_port/REUSABLE_SEEDS.md`): `cod` seed 1 (`artifacts/o5`) và
+`cod_no_baseline` seed 1 (`artifacts/o12`). Cả hai train bằng `train_v34`, mà
+`14cd674` chỉ đụng `ode_physics_loss_shared`. `artifacts/fno` và `artifacts/fno2`
+**không dùng lại được**: không có `model.pt`, nên không sinh được chỉ số chính.
+
+Còn lại: **117 lần chạy** (17 ô × 7 seed − 2). Danh sách ở
+`audit_port/LAUNCH_LIST.md`, sinh bởi `scripts/make_launch_list.py`.
+
+**N-13. Bước CHẤM ĐIỂM đắt hơn kế hoạch 20 lần, và đó là lỗi cache chứ không
+phải lỗi kế hoạch.** Đo được 2026-08-06: `24_rollout_thermal_error.py --exact`
+mất **57 phút** cho 2 kịch bản × 730 cửa sổ trên CPU này. Gần như toàn bộ chi phí
+là rollout **tham chiếu** và burn-in điểm cuối tuần hoàn — cả hai **không phụ
+thuộc model**, chúng là tính chất của forcing — nhưng script tính lại từ đầu mỗi
+lần gọi. Với 117 run: **~107 giờ CPU**, và ở chân trời 2 năm của Amendment 1 thì
+gấp đôi.
+
+Amendment 1 dự toán **4,6 giờ GPU** cho đúng việc này, với đúng lý do: "reference
+rollout và cyclic burn-in không phụ thuộc model, nên tính một lần mỗi kịch bản và
+dùng lại cho cả 112 cell-seed". Kế hoạch đúng, script chưa làm.
+
+**Không chặn việc train** — train phải xảy ra trước dù thế nào. Việc cần làm
+trước **bước chấm điểm**: lưu lại reference rollout và cyclic cache theo
+`(K, max_windows)` rồi dùng lại giữa các checkpoint.

@@ -115,10 +115,31 @@ def _report(root: Path) -> tuple:
     return agg.build_report(runs, root)
 
 
-def _cell(md_root: Path, cfg: Path, seeds: dict, **kw):
-    """`seeds` maps seed -> (theta, gas)."""
+def _cell(md_root: Path, cfg: Path, seeds: dict, rollout: dict | None = None,
+          gas_order: list | None = None, **kw):
+    """`seeds` maps seed -> (theta, gas).
+
+    `rollout` maps K -> signed end-of-rollout gas error in ppm, written into a
+    `rollout.json` beside each seed's `run.json` in the shape
+    `24_rollout_thermal_error.py --json-out` produces.
+    """
     for s, (th, g) in seeds.items():
-        _write(md_root, f"{cfg.stem}_s{s}", _run_json(cfg, s, th, g, **kw))
+        d = _write(md_root, f"{cfg.stem}_s{s}", _run_json(cfg, s, th, g, **kw))
+        if rollout is None:
+            continue
+        # Callable so a cell can vary per seed, which is what gives bar (b)
+        # a range to work with rather than seven identical points.
+        per_seed = rollout(s) if callable(rollout) else rollout
+        names = gas_order or [m.key for m in agg.GASES]
+        rows = []
+        for K, err in per_seed.items():
+            by_name = dict(zip([m.key for m in agg.GASES], err))
+            rows.append({"K": K, "n": 730, "gas_window": 729,
+                         "gas_years": 1.0, "gas_names": names,
+                         "gas_ref_end": [1.0] * len(names),
+                         "gas_err": [by_name[n] for n in names]})
+        (d / "rollout.json").write_text(json.dumps({"rows": rows}),
+                                        encoding="utf-8")
 
 
 # ── 1. the null case ─────────────────────────────────────────────────────────
@@ -404,6 +425,99 @@ def check_no_gas_percent(tmp: Path) -> None:
            if ln.startswith("|") and "nmae" in ln.lower()]
     check("no table row or header mentions NMAE", not tbl, f"{tbl[:1]}")
 
+    # Every markdown table must have as many columns in its header as in its
+    # separator. A literal `|` inside a header label silently adds columns and
+    # the table renders out of step with its own separator -- which happened to
+    # the primary H1 header, whose label was `|model-ref| ppm`.
+    lines = md.splitlines()
+    bad_tbl = []
+    for i, ln in enumerate(lines[:-1]):
+        nxt = lines[i + 1]
+        if not (ln.startswith("|") and set(nxt.replace("|", "").strip())
+                <= {"-", " ", ":"} and nxt.startswith("|")):
+            continue
+        if ln.count("|") != nxt.count("|"):
+            bad_tbl.append(f"{ln.count('|')} vs {nxt.count('|')}: {ln[:70]}")
+    check("every table header has the same column count as its separator",
+          not bad_tbl, f"{bad_tbl[:2]}")
+
+
+# ── the Amendment 1 primary metric ───────────────────────────────────────────
+def check_primary_metric(tmp: Path) -> None:
+    print("\n9. Amendment 1's primary metric, from rollout.json")
+
+    # Nothing scored: the primary section must say so and must not fall back.
+    root = tmp / "no_rollout"
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)})
+    _cell(root, CFG_MONO, {s: (7.0, 0.90) for s in range(1, 8)})
+    md, _ = _report(root)
+    check("with no rollout.json the primary section says nothing was scored",
+          "No run in this directory has been scored on the primary metric"
+          in md)
+    check("and the demoted 12 h metric is not promoted in its place",
+          "## 4. H1 (SECONDARY)" in md and "## 3. H1 (PRIMARY)" in md)
+
+    # Scored, and separated by far more than the floor.
+    root = tmp / "rollout_scored"
+    casc = {0.95: [0.01, 0.001, 0.01, 0.02, 0.05],
+            1.10: [0.02, 0.002, 0.02, 0.04, 0.10]}
+    mono = {0.95: [9.00, 4.000, 9.00, 9.00, 9.00],
+            1.10: [9.00, 4.000, 9.00, 9.00, 9.00]}
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)},
+          rollout=lambda s: {K: [v + 1e-6 * s for v in err]
+                             for K, err in casc.items()})
+    _cell(root, CFG_MONO, {s: (2.4, 0.02) for s in range(1, 8)},
+          rollout=lambda s: {K: [v + 1e-6 * s for v in err]
+                             for K, err in mono.items()})
+    md, _ = _report(root)
+    check("a scored pair produces the primary H1 table",
+          "| 0.95 | c_H2 |" in md and "| 1.10 | c_C2H2 |" in md)
+    check("and a large, separated primary difference is reportable",
+          "difference worth reporting" in md)
+
+    # Sign: the metric is |model - reference|, so a cell whose seeds straddle
+    # zero must not average to "accurate".
+    root = tmp / "rollout_sign"
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)},
+          rollout={0.95: [+5.0, 0.0, 0.0, 0.0, 0.0]})
+    md, _ = _report(root)
+    check("a +5 ppm error is carried as 5 ppm", "| 5 |" in md or "5.000" in md
+          or "| 5" in md)
+    root = tmp / "rollout_sign_neg"
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)},
+          rollout={0.95: [-5.0, 0.0, 0.0, 0.0, 0.0]})
+    md_neg, _ = _report(root)
+    check("and a -5 ppm error is carried as the same 5 ppm, not as -5",
+          "-5" not in md_neg.split("## 3.")[1].split("## 4.")[0],
+          "H1 asks which configuration ends closer to the right "
+          "concentration; a cell whose seeds straddle zero would otherwise "
+          "get a median near zero for being inconsistent")
+
+    # Zip by name, not by position.
+    root = tmp / "rollout_reordered"
+    order = ["c_CO2", "c_CO", "c_C2H4", "c_C2H2", "c_H2"]
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)},
+          rollout={0.95: [1.0, 2.0, 3.0, 4.0, 5.0]}, gas_order=order)
+    md_r, _ = _report(root)
+    root = tmp / "rollout_inorder"
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)},
+          rollout={0.95: [1.0, 2.0, 3.0, 4.0, 5.0]})
+    md_i, _ = _report(root)
+    check("gas values are matched by name, so a reordered rollout.json agrees",
+          md_r.replace(str(tmp / "rollout_reordered"), "X")
+          == md_i.replace(str(tmp / "rollout_inorder"), "X"),
+          "zipping against this file's own gas order would depend on two "
+          "orderings in two files staying in step")
+
+    # A scenario the plan does not name must not silently become a column.
+    root = tmp / "rollout_wrongK"
+    _cell(root, CFG_CASCADE, {s: (2.0, 0.01) for s in range(1, 8)},
+          rollout={0.85: [1.0, 1.0, 1.0, 1.0, 1.0]})
+    md, _ = _report(root)
+    check("a scenario outside K = 0.95 / 1.10 is ignored, not relabelled",
+          "No run in this directory has been scored on the primary metric"
+          in md, "Amendment 1 names two scenarios")
+
 
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="agg_sentinel_"))
@@ -417,6 +531,7 @@ def main() -> int:
         check_dependence(tmp)
         check_factorial(tmp)
         check_no_gas_percent(tmp)
+        check_primary_metric(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

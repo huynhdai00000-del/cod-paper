@@ -107,6 +107,24 @@ CELLS = {
                  "the pair is valid; comparing either against COD's cells is "
                  "affected, which J-8 already records.",
     },
+    # ── Factorial cell 2: no baseline, monolithic ──────────────────────────
+    # The other three architectures reach cell 2 through their published form,
+    # which has no analytic baseline; PI-DeepONet's published form in this repo
+    # is `MonolithicFair`, so it needs an entry of its own. Without it the
+    # PI-DeepONet quadrant has three cells of four and neither main effect is
+    # identified — only the simple effects are, which is a narrower claim than
+    # the factorial exists to make (DECISIONS N-12, PORT_LOG J-95).
+    "pideeponet_monolithic": {
+        "kind": "monolithic_fair",
+        "notes": "PI-DeepONet monolithic, no analytic baseline. Factorial "
+                 "cell 2 for the fourth architecture, and the partner of "
+                 "pideeponet_baseline_monolithic. Every hyperparameter is left "
+                 "at the same default as that cell so the baseline is the only "
+                 "difference. Inherits J-8 (ne shadowed to 12) EQUALLY with its "
+                 "partner, which is what keeps the contrast within the pair "
+                 "valid; fixing it here would make the two cells differ in two "
+                 "ways and is the reason it is deliberately not fixed.",
+    },
     # ── Factorial cell 3: with IEC baseline, in-cascade ────────────────────
     # COD is already cell 3 for PI-DeepONet, so only three are needed here.
     "fno_baseline_in_cascade": {
@@ -162,10 +180,10 @@ CELLS = {
 TRAINING_OVERRIDES = {
     "cod_no_baseline": {"loop": "train_v34"},
     "cod_bounded_correction": {"loop": "train_v34"},
-    # The PI-DeepONet monolithic cells use the shared physics trainer, the same
-    # as cell 2 (MonolithicFair), so the baseline contrast within that pair is
-    # not confounded by a change of loop.
+    # Both PI-DeepONet monolithic cells use the shared physics trainer, so the
+    # baseline contrast within that pair is not confounded by a change of loop.
     "pideeponet_baseline_monolithic": {"loop": "train_physics"},
+    "pideeponet_monolithic": {"loop": "train_physics"},
 }
 
 

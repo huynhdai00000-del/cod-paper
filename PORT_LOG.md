@@ -1624,6 +1624,249 @@ That arm differed in event duration as well as in period.
 Recorded in DECISIONS as N-11 rather than edited into PERIOD_FIX.md or N-7, per the
 repo rule.
 
+### J-95 The primary metric, the missing quadrant cell, and the cell nobody ran
+
+DECISIONS N-12 recorded three holes. All three are closed here. The third was
+the one that mattered: without a script emitting end-of-rollout gas ppm, all
+117 runs could finish and **H1 would still be undecidable**, because the
+hypothesis ANALYSIS_PLAN Amendment 1 declares is about a quantity nothing
+produced.
+
+---
+
+#### 1. End-of-rollout gas ppm now exists, and is gated in both directions
+
+**The quantity was already being computed and thrown away.** `chi_lifetime_rollout`
+carries all six states across windows — `x_cur = xp[-1:]` is the next window's
+initial condition — and `reference_rollout` carries the RK45 state the same way.
+Only `theta_TO` was kept. `RolloutResult` and `ReferenceRollout` now also carry
+`gas_end`, `(n_windows, 5)` in ppm, recorded rather than recomputed so the
+reported concentration is the one the rollout actually propagated.
+
+**Read at the last window both rollouts cover.** At K = 1.10 the reference
+reaches EOL and stops before the horizon while the model runs on, so a naive
+"final window" would score two different points in the unit's life against each
+other. Same rule the thermal series already used, applied to a second quantity
+rather than a new convention invented for it.
+
+**Free-running only, and this is a limitation not a choice.** Teacher forcing
+restores `theta_TO` alone by design, so a "teacher-forced" gas series is still
+free-running in the gas channels; there is no single-window / accumulation split
+for gases and §7 of the report says so rather than implying one.
+
+**The gate, both directions.** `--exact` scores `ExactModel`, which has zero
+error by construction, and every gas must come back at zero. `--inject-gas-bias`
+is the other direction, added because a gate that has only ever passed is not a
+verified gate:
+
+| injection | thermal gate | gas gate | exit |
+|---|---|---|---|
+| none, `--exact`, 730 windows, both scenarios | +0.0000 degC | worst 4.0e-04 ppm, **PASS** | 0 |
+| `--inject-bias 0.5` | **+0.5087 degC**, right sign and size | not tripped at 40 windows | **1** |
+| `--inject-gas-bias 0.5` | +0.0000 degC | **+19.97 ppm on all five** | **1** |
+
+**The tolerances are measured, and the bar that set them is not the obvious
+one.** `ExactModel` over 730 windows at both Amendment 1 scenarios scores
+1.29e-04, 2.33e-05, 2.75e-06, 1.21e-04 and 3.96e-04 ppm on the five gases — the
+float32 round-trip of the state carried between windows, growing **sub-linearly**
+with horizon (c_CO2 at K=0.95: 1.2e-05 at 60 windows, 1.0e-04 at 730, a factor
+8.6 for a factor 12 in windows), which is what accumulated round-off looks like
+rather than drift.
+
+The tolerances sit 39x to 364x above those. Checking them against **IEC 60599
+attention levels** gives 4e-4 to 1e-3 of the level, which is reassuring and is
+the wrong bar. The binding bar is **ANALYSIS_PLAN §3's reporting floors**: the
+instrument's own residual must be far below the smallest difference the analysis
+will report at all, or it can mask one. The first draft had c_CO2 at 1.0 ppm —
+comfortably 4e-4 of the IEC level, and **100% of its §3 floor**, i.e. an
+instrument permitted to be as large as the smallest thing it has to resolve. The
+committed values are 0.5% to 2.5% of their floors.
+
+The two injections test different things, which is why both exist. A thermal
+injection does perturb the gases — the offset temperature is carried into the
+next window and drives generation — but at 40 windows that reaches only
+0.0017 ppm on CO2, well under the gas tolerance. It is an integrated indirect
+effect, not a test of the gas comparison's own arithmetic.
+
+Worth reading off the injection: +0.5 ppm per window became **+19.97 ppm** over
+40 windows. A per-window offset compounds in a free-running rollout, which is
+precisely the mechanism Amendment 1 says the metric exists to catch — "a wrong
+equilibrium persists indefinitely" — demonstrated here on a model where the
+wrongness is known because it was injected.
+
+**Two defects found while doing it.**
+
+*`24_rollout_thermal_error.py` could only load COD.* `load_checkpoint`
+constructed a `CODOperator` unconditionally, so the script was usable on one of
+seventeen cells while the runbook asks for it on every cell. Since Amendment 1
+puts the **primary** metric in this script, that alone would have left H1
+undecidable for every baseline no matter how many runs finished. It now rebuilds
+whatever architecture wrote the checkpoint, through `run.py`'s own `build_model`
+from the `config` the checkpoint carries, with `strict=True` as the check that
+the rebuild was right. Verified on a MIONet in-cascade checkpoint.
+
+*The entire markdown path was dead.* `_render` read `out_path` as a global while
+`main` assigned it as a local, so every invocation without `--json-out` raised
+`NameError`. It survived because the only exercise the script had since `--out`
+was added (J-93) went through `--json-out`, which returns before `_render`.
+
+---
+
+#### 2. PI-DeepONet cell 2 — a config, and nothing else
+
+`MonolithicFair` already takes `use_baseline` and `run.py` already threads it, so
+the missing cell needed no code: `configs/matrix/pideeponet_monolithic.yaml`,
+generated by `make_matrix_configs.py` like every other cell. Regenerating all
+sixteen changed no existing file, so no config hash moved.
+
+Measured, because "the baseline is the only difference" is a claim:
+`pideeponet_monolithic` and `pideeponet_baseline_monolithic` both have
+**156,498 parameters** and both satisfy the initial condition exactly
+(`|x(0) - x0|` = 0.0). Both inherit J-8 — `n_exp` shadowed to 12 — **equally**,
+which is what keeps the contrast within the pair valid, and is the reason it is
+deliberately not fixed in one of them.
+
+The PI-DeepONet quadrant is now complete: cell 1
+`pideeponet_baseline_monolithic`, cell 2 `pideeponet_monolithic`, cell 3 `cod`,
+cell 4 `cod_no_baseline`. Its main effects and interaction become identifiable
+for the first time.
+
+---
+
+#### 3. COD was in no runbook loop
+
+ANALYSIS_PLAN §4 requires COD at the same seven seeds as every baseline — *"a
+headline method at one seed against baselines at seven is an asymmetry that
+invalidates the comparison"* — and both loops in `scripts/matrix_runbook.md`
+iterated over `configs/matrix/*.yaml`. COD's config is
+`configs/example_cod_seed1.yaml`, which is not in that directory, so it was
+never going to be run by either loop. It has its own block now.
+
+The shape is worth naming because it is not the J-93 shape and would not have
+been caught by looking for that one: **the loop was correct for everything it
+iterated over, and the item that mattered was not in the collection.** J-93 was
+a loop variable that reached the path but not the computation; this is an
+element that was never in the loop at all. Both leave a full-looking result set.
+
+---
+
+#### 4. The aggregator now consumes the primary metric
+
+`scripts/aggregate_results.py` reads `<run>/rollout.json` and applies §3's two
+bars, §1's confound control and §4's seed summary to end-of-rollout gas ppm as
+**§3 PRIMARY**, with the 12 h gas MAE demoted to **§4 SECONDARY** under
+Amendment 1's own reasoning. What it will not do:
+
+- **substitute** the secondary for the primary. A run without `rollout.json`
+  contributes nothing rather than a zero, and the report states "H1 is
+  undecided" rather than presenting §4 as the answer;
+- **conflate** "nobody ran the rollout" with "the rollout ran on seeds that did
+  not converge". Those call for different actions and one sentence would hide
+  it;
+- **zip by position.** `24` writes `gas_names` beside `gas_err` and the
+  aggregator matches on the name. Two orderings in two files staying in step
+  for ever is the assumption this project keeps finding broken.
+
+The stored error is signed; what the bars are applied to is its **magnitude**.
+H1 asks which configuration ends the rollout closer to the right concentration,
+and a cell whose seeds straddle zero would otherwise earn a median near zero for
+being inconsistent. `37_aggregator_sentinel_check.py` gained a ninth section
+covering all of this, including the reordered-`gas_names` case and a scenario
+outside K = 0.95 / 1.10, which must be ignored rather than relabelled.
+
+---
+
+#### 5. Which finished runs count, and a false alarm worth recording
+
+`38_reusable_seed_audit.py` applies five conditions to every finished run:
+config hash resolves to a config that exists now, frozen distribution,
+converged with the wall budget not binding, `model.pt` present — Amendment 1's
+primary metric is computed from the weights, so a run whose `run.json` survived
+and whose weights did not cannot produce it — and its training loop unchanged
+since it ran.
+
+| run | verdict |
+|---|---|
+| `artifacts/o5` | **reusable as `cod` seed 1** |
+| `artifacts/o12` | **reusable as `cod_no_baseline` seed 1** |
+| `artifacts/fno` | repeat: no `model.pt`, and trained before `14cd674` changed `train_physics` |
+| `artifacts/fno2` | repeat: no `model.pt` |
+
+O-5 and O-12 both train under `train_v34`, and `14cd674` touched only
+`ode_physics_loss_shared` — checked in the diff, and stated in that commit's own
+message: *"Ablation A used train_v34 and is unaffected."* `8ceb13e` touched only
+the clamp diagnostics, not the loss value. O-5 converged at 4,911 s under a
+7,200 s cap that never bound, so the matrix's 10,800 s cap would give the
+identical run.
+
+**The false alarm.** The first version of this check used a relative tolerance
+of 1e-6 and reported that **neither** O-5 nor O-12 reproduced, at 1.4e-3 and
+2.0e-3 relative on the gases — which would have meant discarding two converged
+GPU runs. The absolute differences were **2.8e-7 and 1.5e-7 ppm**.
+
+The control that settles it is model-free: `denominator_median`, the median
+ground-truth variation of each state, computed from RK45 with no model in it at
+all, **also moves — by 7.4e-06 relative**. The recorded runs were scored on
+Colab (Linux, numpy 2.0.2, scipy 1.16.3) and the rescoring runs on Windows with
+numpy 1.24.3 and scipy 1.14.1. A gas MAE of 5e-4 ppm sitting on a ground truth
+that wobbles at 1e-5 relative gives exactly the 1e-3 seen. And O-12's
+`theta_TO`, four orders larger in magnitude, reproduced at **1.4e-7** — COD's
+gases are downstream of theta, so no real forward-path change could move them
+while leaving theta bit-exact.
+
+This is C-9's lesson one level up, and the reason it is written down: **a ratio
+to a quantity far below the measurement floor is arithmetically valid and
+physically empty.** C-9 caught it in a reported metric; here it appeared in a
+*verification tolerance*, where it does the opposite damage — it manufactures a
+failure instead of a finding. The check now compares in absolute physical units
+against 1% of each state's ANALYSIS_PLAN §3 reporting floor, which is the
+smallest step that could change any verdict the aggregator produces. The
+measured differences are three orders below that bar.
+
+---
+
+#### 6. The launch list
+
+`scripts/make_launch_list.py` deals every remaining (cell, seed) pair across N
+accounts. Nothing in it is typed by hand: the cells are every config under
+`configs/` on the frozen distribution hash, the seeds are `1..7` from §4, and the
+already-done set is `audit_port/reusable_seeds.json` written by 38. Adding a cell
+to `configs/matrix/` changes the list without editing it.
+
+**17 cells x 7 seeds = 119, minus 2 already done = 117 runs**, dealt into 20
+lines of 5-6 runs, 3.7-5.5 GPU h each.
+
+The deal spreads each account across as many *different cells* as possible at as
+few different seeds as possible. That is not cosmetic: losing one account then
+costs one seed from several cells and every cell stays reportable at six, while
+an account owning whole cells loses a cell entirely — and a missing cell is
+exactly what makes a main effect unidentifiable.
+
+---
+
+#### 7. A measured cost problem in the SCORING step, not the training step
+
+Flagged with a number rather than fixed, because it does not block the launch:
+training has to happen first either way, and the fix is a caching change that
+belongs in its own commit.
+
+The `--exact` run above took **57 minutes** for two scenarios at 730 windows on
+this CPU. Almost all of it is the **reference** rollout and the cyclic-endpoint
+burn-ins, and both are **model-independent** — they are a property of the
+forcing. The script recomputes them from scratch on every invocation.
+
+At 117 runs that is **~107 CPU-hours** for the scoring step, and at Amendment 1's
+own two-year horizon roughly double. Amendment 1 budgeted **4.6 GPU-hours** for
+exactly this, on exactly the right reasoning: *"the reference rollout and the
+cyclic burn-ins are model-independent, so they are computed once per scenario and
+reused across all 112 cell-seeds; only the model forward passes scale with the
+matrix."* The plan is right and the script does not do it yet.
+
+So the cheapest next piece of work, before the scoring pass rather than before
+the launch: persist the reference rollout and the cyclic cache per
+`(K, max_windows)` and reuse them across checkpoints. That is what turns a
+107-hour post-processing step into the few hours the plan assumed.
+
 ### J-94 J-93 re-verified from scratch, and the aggregator that reads the matrix
 
 Two pieces of work, and the first exists because the second depends on it: an
@@ -1728,6 +1971,13 @@ concentrations. Filling that column with the 12 h gas MAE would reinstate the
 metric Amendment 1 demoted, for the reason it demoted it. **H1 is therefore not
 yet decidable from any artifact that exists**, and the report says so in its §7
 rather than quietly presenting the secondary comparison as the primary one.
+
+> **Superseded by J-95 (2026-08-06).** The metric now exists: `24` emits
+> end-of-rollout gas ppm and the aggregator reads it as §3 PRIMARY, with the
+> 12 h gas MAE at §4 SECONDARY. What still holds from the paragraph above is
+> the rule it states — a run that has not been scored contributes nothing
+> rather than a zero, and the secondary is never promoted in the primary's
+> place.
 
 **Two defects the sentinel check found in the aggregator, both fixed.** It did
 not verify that `converged` agrees with `stop_reason` — the harness sets both at

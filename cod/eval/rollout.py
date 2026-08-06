@@ -164,6 +164,12 @@ class ReferenceRollout:
     theta_pts: np.ndarray        # (n_windows, n_eval) resolved trajectory
     dp: np.ndarray
     reached_eol: bool
+    #: (n_windows, 5) reference gas concentration in ppm at each window end.
+    #: ANALYSIS_PLAN Amendment 1 makes end-of-rollout gas ppm the primary metric,
+    #: and it is a *state*, not a summary: the rollout already carries all six
+    #: states across windows, but only theta was being kept, so the quantity the
+    #: primary hypothesis is tested on was being computed and thrown away.
+    gas_end: np.ndarray | None = None
 
     @property
     def eol_years(self) -> float:
@@ -201,7 +207,7 @@ def reference_rollout(K_base: float, max_years: int = 50, n_eval: int = 20,
                         gas_ic_from_ss(K_base, Ta_init,
                                        steady_state=steady_state)]).astype(float)
     DP_cur = DP0
-    yr_l, th_l, dp_l, pts_l = [], [], [], []
+    yr_l, th_l, dp_l, pts_l, gas_l = [], [], [], [], []
     reached_eol = False
 
     for w in range(max_windows):
@@ -220,6 +226,7 @@ def reference_rollout(K_base: float, max_years: int = 50, n_eval: int = 20,
         th_l.append(float(theta_pts[-1]))
         dp_l.append(DP_cur)
         pts_l.append(theta_pts.copy())
+        gas_l.append(sol.y[1:, -1].copy())
         x = sol.y[:, -1].copy()
 
         if DP_cur <= DP_EOL + 1.0:
@@ -229,7 +236,8 @@ def reference_rollout(K_base: float, max_years: int = 50, n_eval: int = 20,
     return ReferenceRollout(K_base=K_base, years=np.array(yr_l),
                             theta_TO_end=np.array(th_l),
                             theta_pts=np.stack(pts_l), dp=np.array(dp_l),
-                            reached_eol=reached_eol)
+                            reached_eol=reached_eol,
+                            gas_end=np.stack(gas_l) if gas_l else None)
 
 
 @dataclass
@@ -245,6 +253,16 @@ class RolloutResult:
     theta_cyc_ref: np.ndarray     # cyclic endpoint of the window's OWN forcing
     reached_eol: bool
     theta_pts: np.ndarray | None = None   # (n_windows, n_eval) resolved trajectory
+    #: (n_windows, 5) predicted gas concentration in ppm at each window end —
+    #: the state this rollout already carries forward as the next window's IC.
+    #: ANALYSIS_PLAN Amendment 1's primary metric is this quantity at the end of
+    #: the horizon, against `ReferenceRollout.gas_end`. It is the right test for
+    #: the cascade because gases relax toward an equilibrium set by temperature:
+    #: an in-cascade model reaches the correct one by construction, having
+    #: integrated the right quadrature, while a monolithic model has no such
+    #: constraint and a wrong equilibrium persists indefinitely. A 12 h window
+    #: cannot see that; 1460 windows can.
+    gas_end: np.ndarray | None = None
 
     @property
     def eol_years(self) -> float:
@@ -354,6 +372,7 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
     DP_cur = DP0
 
     chi_l, dp_l, yr_l, th_l, ss_l, cy_l, pts_l = [], [], [], [], [], [], []
+    gas_l = []
     if cyc_cache is None:
         cyc_cache = {}
     reached_eol = False
@@ -386,6 +405,10 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
         dp_l.append(DP_cur)
         yr_l.append(w * T / 1440 / 365)
         th_l.append(float(xp[-1, 0].item()))
+        # The five gases at the window end, i.e. exactly the state carried into
+        # the next window as `x_cur`. Recorded rather than recomputed so the
+        # reported concentration is the one the rollout actually propagated.
+        gas_l.append(np.asarray(xp[-1, 1:].cpu().numpy(), float))
         ss_l.append(float(steady_state(K_w, Ta_w)))
         # Seeded from the window-mean equilibrium rather than from the model, so
         # the reference stays independent of what is being scored against it.
@@ -414,6 +437,7 @@ def chi_lifetime_rollout(model, K_base: float, max_years: int = 50,
         dp=np.array(dp_l), theta_TO_end=np.array(th_l),
         theta_ss_ref=np.array(ss_l), theta_cyc_ref=np.array(cy_l),
         reached_eol=reached_eol, theta_pts=np.stack(pts_l) if pts_l else None,
+        gas_end=np.stack(gas_l) if gas_l else None,
     )
 
 
