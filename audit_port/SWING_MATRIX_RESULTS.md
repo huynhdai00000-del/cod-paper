@@ -1,6 +1,6 @@
 # Swing fidelity and Jensen-gap matrix
 
-Source: `../results_raw`. Converged checkpoints: **111**; scored: **111**; missing: **0**; malformed: **0**.
+Source: `../results_full`. Converged checkpoints: **113**; scored: **113**; missing: **0**; malformed: **0**.
 
 All summaries are median and full min–max over seeds. Gate counts are reported explicitly; a failed seed is never dropped. `n/e` means the model tracked no swing band at median thermal MAE <= 5 degC, so the spectral-bias gate was not evaluable.
 
@@ -8,9 +8,9 @@ All summaries are median and full min–max over seeds. Gate counts are reported
 
 | cell | architecture | cascade | baseline | scored | gate (pass/fail/n/e) | median swing ratio [min–max] | median thermal MAE degC [min–max] |
 |---|---|---|---|---|---|---|---|
-| `cod` | PI-DeepONet | True | True | 6 | 6/0/0 | 1.0103 [1.0055–1.0176] | 0.3309 [0.2366–0.4205] |
+| `cod` | PI-DeepONet | True | True | 7 | 7/0/0 | 1.0112 [1.0055–1.0176] | 0.3491 [0.2366–0.4205] |
 | `cod_bounded_correction` | PI-DeepONet | True | True | 1 | 0/0/1 | 1.4951 [1.4951–1.4951] | 15.5426 [15.5426–15.5426] |
-| `cod_no_baseline` | PI-DeepONet | True | False | 6 | 1/5/0 | 0.9970 [0.8935–1.0321] | 1.4831 [1.1551–2.0715] |
+| `cod_no_baseline` | PI-DeepONet | True | False | 7 | 2/5/0 | 0.9987 [0.8935–1.0830] | 1.5300 [1.1551–2.2822] |
 | `fno_baseline_in_cascade` | FNO | True | True | 7 | 7/0/0 | 1.0356 [1.0310–1.0465] | 0.3137 [0.2208–0.5165] |
 | `fno_baseline_monolithic` | FNO | False | True | 7 | 7/0/0 | 1.0265 [1.0169–1.0313] | 0.4119 [0.3295–0.5710] |
 | `fno_in_cascade` | FNO | True | False | 7 | 0/7/0 | 0.6886 [0.5568–0.7912] | 4.2355 [2.8418–5.8710] |
@@ -32,9 +32,9 @@ Median of each seed's median predicted/true Jensen-gap ratio over live cases. On
 
 | cell | `c_H2` | `c_C2H2` | `c_C2H4` | `c_CO` | `c_CO2` | `DP` |
 |---|---|---|---|---|---|---|
-| `cod` | 1.0065 [1.0029–1.0093] | 1.0150 [1.0064–1.0215] | 1.0094 [1.0042–1.0135] | 1.0037 [1.0018–1.0063] | 1.0027 [1.0012–1.0046] | 1.0079 [1.0036–1.0112] |
+| `cod` | 1.0069 [1.0029–1.0093] | 1.0144 [1.0064–1.0215] | 1.0094 [1.0042–1.0135] | 1.0037 [1.0018–1.0063] | 1.0027 [1.0012–1.0046] | 1.0082 [1.0036–1.0112] |
 | `cod_bounded_correction` | 1.1555 [1.1555–1.1555] | 1.3136 [1.3136–1.3136] | 1.2168 [1.2168–1.2168] | 1.0957 [1.0957–1.0957] | 1.0684 [1.0684–1.0684] | 1.1873 [1.1873–1.1873] |
-| `cod_no_baseline` | 0.9919 [0.9673–1.0092] | 0.9770 [0.9351–1.0324] | 0.9865 [0.9533–1.0216] | 0.9952 [0.9796–1.0044] | 0.9960 [0.9850–1.0038] | 0.9894 [0.9606–1.0150] |
+| `cod_no_baseline` | 0.9950 [0.9673–1.0147] | 0.9824 [0.9351–1.0324] | 0.9911 [0.9533–1.0216] | 0.9968 [0.9796–1.0099] | 0.9971 [0.9850–1.0072] | 0.9932 [0.9606–1.0178] |
 | `fno_baseline_in_cascade` | 1.0120 [1.0084–1.0154] | 1.0232 [1.0204–1.0323] | 1.0154 [1.0128–1.0215] | 1.0077 [1.0049–1.0095] | 1.0056 [1.0035–1.0072] | 1.0138 [1.0105–1.0184] |
 | `fno_baseline_monolithic` | 1.0118 [1.0049–1.0137] | 1.0291 [1.0119–1.0329] | 1.0180 [1.0073–1.0206] | 1.0064 [1.0030–1.0082] | 1.0045 [1.0021–1.0058] | 1.0149 [1.0061–1.0168] |
 | `fno_in_cascade` | 0.8486 [0.8125–0.8713] | 0.7108 [0.6259–0.7548] | 0.7899 [0.7288–0.8210] | 0.9056 [0.8775–0.9189] | 0.9281 [0.9064–0.9399] | 0.8191 [0.7729–0.8443] |
@@ -54,21 +54,21 @@ Median of each seed's median predicted/true Jensen-gap ratio over live cases. On
 
 | cell | band (degC) | scored seeds | tracked seeds | failed seeds | median ratio [min–max], tracked seeds |
 |---|---|---|---|---|---|
-| `cod` | 1–5 | 6 | 6 | 0 | 1.0141 [1.0021–1.0371] |
-| `cod` | 5–10 | 6 | 6 | 0 | 1.0029 [0.9838–1.0134] |
-| `cod` | 10–15 | 6 | 6 | 0 | 1.0087 [1.0065–1.0201] |
-| `cod` | 15–25 | 6 | 6 | 0 | 1.0106 [1.0069–1.0191] |
-| `cod` | 25–200 | 6 | 6 | 0 | 1.0408 [1.0258–1.0542] |
+| `cod` | 1–5 | 7 | 7 | 0 | 1.0160 [1.0021–1.0371] |
+| `cod` | 5–10 | 7 | 7 | 0 | 1.0004 [0.9813–1.0134] |
+| `cod` | 10–15 | 7 | 7 | 0 | 1.0084 [1.0033–1.0201] |
+| `cod` | 15–25 | 7 | 7 | 0 | 1.0112 [1.0069–1.0191] |
+| `cod` | 25–200 | 7 | 7 | 0 | 1.0396 [1.0230–1.0542] |
 | `cod_bounded_correction` | 1–5 | 1 | 0 | 0 | n/e |
 | `cod_bounded_correction` | 5–10 | 1 | 0 | 0 | n/e |
 | `cod_bounded_correction` | 10–15 | 1 | 0 | 0 | n/e |
 | `cod_bounded_correction` | 15–25 | 1 | 0 | 0 | n/e |
 | `cod_bounded_correction` | 25–200 | 1 | 0 | 0 | n/e |
-| `cod_no_baseline` | 1–5 | 6 | 6 | 1 | 1.0295 [0.9293–1.0764] |
-| `cod_no_baseline` | 5–10 | 6 | 6 | 1 | 1.0461 [0.9020–1.0767] |
-| `cod_no_baseline` | 10–15 | 6 | 6 | 1 | 1.0075 [0.9009–1.0931] |
-| `cod_no_baseline` | 15–25 | 6 | 6 | 1 | 0.9808 [0.9118–1.0212] |
-| `cod_no_baseline` | 25–200 | 6 | 6 | 5 | 0.8895 [0.8197–0.9626] |
+| `cod_no_baseline` | 1–5 | 7 | 7 | 1 | 1.0409 [0.9293–1.0942] |
+| `cod_no_baseline` | 5–10 | 7 | 7 | 1 | 1.0573 [0.9020–1.1006] |
+| `cod_no_baseline` | 10–15 | 7 | 7 | 1 | 1.0083 [0.9009–1.0931] |
+| `cod_no_baseline` | 15–25 | 7 | 7 | 1 | 0.9917 [0.9118–1.0327] |
+| `cod_no_baseline` | 25–200 | 7 | 7 | 5 | 0.9154 [0.8197–1.0207] |
 | `fno_baseline_in_cascade` | 1–5 | 7 | 7 | 0 | 1.0333 [1.0134–1.0479] |
 | `fno_baseline_in_cascade` | 5–10 | 7 | 7 | 0 | 1.0340 [1.0221–1.0404] |
 | `fno_baseline_in_cascade` | 10–15 | 7 | 7 | 0 | 1.0374 [1.0270–1.0440] |

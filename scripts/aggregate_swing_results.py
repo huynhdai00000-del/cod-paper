@@ -16,6 +16,24 @@ from statistics import median
 
 STATES = ("c_H2", "c_C2H2", "c_C2H4", "c_CO", "c_CO2", "DP")
 
+# The reusable seed-1 COD checkpoints predate the explicit ``cell`` block in
+# run.json. Their model_kind and frozen config hashes identify the same two
+# declared cells used by the main matrix aggregator.
+LEGACY_CELLS = {
+    "cod": {
+        "variant": "cod",
+        "architecture": "PI-DeepONet",
+        "cascade": True,
+        "baseline": True,
+    },
+    "cod_no_baseline": {
+        "variant": "cod_no_baseline",
+        "architecture": "PI-DeepONet",
+        "cascade": True,
+        "baseline": False,
+    },
+}
+
 
 def fmt(x: float) -> str:
     return f"{x:.4f}"
@@ -56,8 +74,13 @@ def main() -> int:
                 f"{run_path.parent.name}: swing distribution hash is "
                 f"{evaluation.get('distribution_hash')!r}")
             continue
-        cell = run.get("cell", {})
+        cell = run.get("cell") or LEGACY_CELLS.get(run.get("model_kind"), {})
         variant = str(cell.get("variant", "<unknown>"))
+        if variant == "<unknown>":
+            problems.append(
+                f"{run_path.parent.name}: cannot identify matrix cell from "
+                "run.json")
+            continue
         cells[variant].append({
             "seed": int(run.get("seed", -1)),
             "cell": cell,

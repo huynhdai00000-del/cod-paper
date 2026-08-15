@@ -1,85 +1,237 @@
-# Sườn bài mới
+# Engineering manuscript skeleton
 
-Cập nhật 2026-07-27. Phạm vi: chỉ máy biến áp (C-12). Ma trận baseline ở C-11 trong DECISIONS.md.
+Updated 2026-08-15. Scope: power-transformer thermal, gas, DP, and CHI trajectories. The empirical basis is the frozen 17-cell matrix with seven seeds per cell.
 
----
+## Working title
 
-## Định vị
+**Cascaded Operator Decomposition for Stable Long-Horizon Transformer State Propagation: A Multi-Backbone Engineering Study**
 
-Bỏ tên "Cascaded Operator Decomposition" và bỏ mọi tuyên bố decomposition là mới (C-8). Định vị trong khung **known operator learning** (Maier et al. 2019) và **gray-box modeling** (Psichogios & Ungar 1992).
+## Central position
 
-Tên đề xuất: *A structure-preserving thermal surrogate for fleet-scale transformer ageing prognostics*
+Existing operator-learning studies include coupled, sequential, hierarchical, and decomposed architectures. The open engineering issue is therefore not whether a system can be split. It is whether the one-way thermal-to-chemical topology can be used as a repeatable deployment interface that:
 
----
+1. remains compatible with different neural backbones;
+2. separates short-window thermal approximation from long-horizon chemical state propagation;
+3. preserves cyclic thermal information needed by nonlinear ageing kinetics; and
+4. produces interpretable DP, gas, and CHI trajectories under repeated rollout.
 
-## Cấu trúc
+To address this issue, COD is presented as a modular learned-deterministic topology. A neural operator predicts the upstream thermal trajectory, optionally as a correction to the IEC thermal baseline, while gas and DP states are propagated by their governing updates outside the neural graph. A controlled 2 by 2 matrix separates the effects of cascade topology and analytic baseline across FNO, MIONet, PI-DeepONet, and S-DeepONet.
+
+## Contribution set
+
+1. A backbone-compatible COD interface for transformer thermal-to-chemical propagation.
+2. A controlled multi-backbone study that separates cascade and analytic-baseline effects under the same distribution, stopping rule, seven seeds, and one-year endpoint.
+3. Evidence that the cascade primarily controls long-horizon gas-state propagation, while the analytic thermal baseline primarily controls cycle-shape attenuation.
+4. Two complementary reference implementations: PI-COD for the lowest absolute error in the tested matrix and FNO-COD for the cleanest backbone-transfer comparison.
+5. A derived Cobb-Douglas CHI trajectory with a corrected conditional monotonicity theorem.
+6. A negative engineering result showing that direct bounded correction is not a reliable refinement under the frozen protocol.
+
+## Paper structure
 
 ### 1. Introduction
-Mở bằng bài toán vận hành: thiếu hụt máy biến áp, lead time 128-144 tuần, tải biến động do năng lượng tái tạo.
 
-Giới thiệu khoảng cách Jensen (bảng ở C-10) làm gap: thực hành hiện nay dùng nhiệt độ trung bình ngày, cách đó đánh giá thấp tốc độ lão hóa 1,70 lần và sinh C2H2 2,59 lần ở dao động ±15°C.
+Start with the operational requirement: loading decisions need transformer thermal and degradation trajectories over many consecutive windows, not only accurate isolated 12-hour predictions.
 
-Ba yêu cầu rút ra: quỹ đạo nhiệt phân giải theo giờ, chi phí ở quy mô đội, không vi phạm ràng buộc vật lý.
+Establish the gap in three steps:
 
-Không mở bằng operator learning. Không mở bằng stiff ODE.
+1. Short-window loss does not test whether recurrent state rollout remains stable.
+2. Monolithic neural state updates can turn a small thermal approximation error into persistent gas error through nonlinear temperature-dependent kinetics.
+3. Existing decomposition ideas do not by themselves establish which engineering component is responsible for thermal fidelity, state propagation, or cross-backbone repeatability.
 
-### 2. Problem statement
-Hệ sáu state, one-way coupling. Nêu điều kiện cascade như một **tính chất của hệ**, không phải phát hiện. Trích operator splitting và skew-product system để nói rõ cấu trúc này đã biết từ lâu.
+Then state the response: COD fixes the thermal trajectory as the learned interface and retains deterministic downstream propagation. Introduce the 2 by 2 study and the CHI output without reporting numerical results in this section.
 
-### 3. Method
-Surrogate hybrid: delta học được trên baseline IEC 60076-7 cho θ_TO, hạ nguồn tính bằng quadrature giải tích ngoài đồ thị mạng.
+### 2. Transformer system and engineering task
 
-Ba đảm bảo trình bày **như hệ quả đã biết, có trích dẫn**:
+#### 2.1 State topology
 
-| Đảm bảo | Cơ chế | Trích dẫn |
-|---|---|---|
-| IC chính xác | mask φ(t), φ(0)=0 | Lagaris et al. 1998 |
-| Không âm | tích phân của hàm dương | nUDE, Philipps et al. 2024 |
-| Cận sai số `L_down·ε_up` | ISS cascade | Sontag |
+- Upstream state: top-oil or hot-spot thermal trajectory.
+- Downstream states: five dissolved gases and DP.
+- One-way dependence: thermal history drives gas and DP evolution; downstream states do not enter the thermal equation in the studied mineral-oil model.
 
-Định vị: một instantiation của known operator learning cho lớp bài toán này.
+#### 2.2 Prediction task
 
-### 4. Bài toán sáu state thu về một state
-Đóng góp thực nghiệm mới. Bảng gradient probe: `∂L_gas/∂θ = 0` chính xác trên cả năm state khí, khác 0 khi bỏ một dòng `.detach()`, thermal bit-identical giữa hai trường hợp. Cộng quan sát residual khí nhỏ hơn thermal 4 đến 7 bậc.
+- Input: load and ambient histories with the current transformer state.
+- Learned output: upstream thermal trajectory over one window.
+- Deterministic output: gas and DP updates over the same window.
+- Repeated deployment: the terminal state initializes the next window.
 
-Kết luận đo được, không phải lập luận kiến trúc: với hệ one-way coupled, bài toán physics-informed sáu state **là** bài toán một state.
+#### 2.3 Primary endpoint
 
-### 5. Experimental setup
-Ba tầng test đóng băng trước khi train (T1 trong phân phối, T2 ngoại suy tham số, T3 ngoài họ phân phối dùng profile tải thật từ ETT). Metric đơn vị vật lý (C-9). Ba seed. Tiêu chí hội tụ định trước áp đồng nhất. Ghi nhận bệnh lý huấn luyện.
+Use absolute gas concentration error in ppm at the end of a one-year free rollout for load factors 0.95 and 1.10. Keep 12-hour MAE as a secondary diagnostic.
+
+### 3. COD engineering topology
+
+#### 3.1 Learned thermal interface
+
+Define the neural thermal operator independently of backbone. For the baseline-equipped form,
+
+\[
+\widehat{\theta}(t)=\theta_{\mathrm{IEC}}(t)+\Delta\theta_{\eta}(t).
+\]
+
+The same interface accepts FNO, MIONet, PI-DeepONet, or S-DeepONet as \(\Delta\theta_{\eta}\).
+
+#### 3.2 Deterministic downstream propagation
+
+Gas and DP trajectories are computed from the predicted thermal history through the governing quadrature or integration rule. They are not direct neural outputs.
+
+#### 3.3 Two independent design factors
+
+- **Cascade factor:** deterministic downstream propagation versus neural monolithic state updates.
+- **Baseline factor:** IEC thermal baseline plus learned correction versus learning the full thermal signal.
+
+This distinction is central to the paper. The cascade and baseline are not treated as one inseparable architecture choice.
+
+### 4. Properties retained from the mathematical formulation
+
+Keep the theorem statements concise in the main text and move proofs to an appendix.
+
+#### 4.1 Cascaded error propagation
+
+State a Lipschitz downstream bound of the form
+
+\[
+\|\widehat{x}_{\mathrm{down}}-x_{\mathrm{down}}\|
+\le L_{\mathrm{down}}\|\widehat{\theta}-\theta\|.
+\]
+
+Present this as a conditional stability statement for the specified operating set, not as a universal guarantee of small error.
+
+#### 4.2 Structural state properties
+
+Retain exact window initialization, DP direction under the stated ageing law, and gas sign or equilibrium conditions only with their explicit assumptions. Do not use these properties to imply numerical accuracy.
+
+#### 4.3 Conditional monotonicity of the adaptive CHI
+
+Let \(x=\chi_{\mathrm{DP}}\), \(y=\chi_{\mathrm{gas}}\), and
+
+\[
+\mathrm{CHI}=x^{w(x)}y^{1-w(x)}, \qquad w(x)=1-\frac{x}{2}.
+\]
+
+Then
+
+\[
+\frac{d\log \mathrm{CHI}}{dt}
+=w\frac{\dot{x}}{x}+(1-w)\frac{\dot{y}}{y}
++\dot{w}(\log x-\log y).
+\]
+
+A sufficient condition for non-increasing CHI is
+
+\[
+\dot{x}\le0,\qquad \dot{y}\le0,\qquad x\le y.
+\]
+
+Apply the theorem to seasonal-smoothed sub-indices rather than claiming that smoothing the nonlinear CHI automatically preserves the derivative argument. CHI remains a derived decision-support trajectory; no CHI reference accuracy is claimed.
+
+### 5. Experimental design
+
+#### 5.1 Frozen matrix
+
+- Backbones: FNO, MIONet, PI-DeepONet, S-DeepONet.
+- Factors: cascade versus monolithic; analytic baseline versus no baseline.
+- Additional design test: bounded-correction PI-COD.
+- Seven seeds per declared cell on frozen distribution `fc4cb76c3b32ec17`.
+
+#### 5.2 Reporting rules
+
+- Report convergence rate before accuracy.
+- Compute accuracy summaries on converged checkpoints only.
+- Report median and full seed range.
+- Apply the prespecified two-fold thermal comparability control before attributing a gas difference to cascade topology.
+- Use absolute ppm error for gas endpoints.
+
+#### 5.3 Secondary mechanism diagnostics
+
+- Thermal swing ratio on the held-out 100-case set.
+- Shape-fidelity gate across tracked swing bands.
+- Jensen-gap preservation for gas and DP kinetics.
 
 ### 6. Results
-1. Độ chính xác nhiệt, đơn vị °C, ba tầng test riêng biệt
-2. Ma trận baseline: mỗi kiến trúc hai cấu hình (C-11)
-3. Rollout một năm, sai số theo số cửa sổ đã roll
-4. **Khoảng cách Jensen đo thực nghiệm**: daily-mean Arrhenius so với quỹ đạo phân giải
-5. Chi phí ở quy mô đội, so với solver ở dung sai khớp độ chính xác
 
-### 7. CHI
-Giữ nguyên như bản cũ: Cobb-Douglas, bốn tiên đề, Proposition 2, Katser field validation. Cần sửa ba lỗi audit tìm ra: thực sự lấy logarithm (hiện `log_chi` không có log), dùng đủ năm khí thay vì bốn, báo cáo cả ngưỡng 90% (54%) lẫn 80% (71%) kèm giải thích vì sao bộ bốn máy biến áp bị loại.
+#### 6.1 Matrix integrity and convergence
 
-### 8. Discussion
-Tổng quát hóa bằng công thức độ nhạy `E/(Rg·T²)`, không thí nghiệm (C-12). Ghi nhận pin cho khoảng cách 1,79 ở ±15K quanh 35°C, gần bằng máy biến áp.
+Report 119 production runs, 113 converged checkpoints, complete one-year and swing scoring for every converged checkpoint, and the 1/7 convergence outcome of bounded correction.
 
-Phân biệt rõ với Ramirez et al. 2025 (EAAI 139:109556), đối thủ cùng miền gần nhất.
+#### 6.2 Primary result: long-horizon propagation
 
-### 9. Limitations
-Không có SCADA thật. Tham số động học chưa có nguồn (O-3). AMORE không benchmark được (C-7). Rollout dài chưa validate bằng dữ liệu thực. Bias nhiệt hệ thống chưa có lời giải thích (O-9).
+Seven of eight matched comparisons pass the thermal control. Across these comparisons, the cascade lowers median one-year gas error in 70/70 gas-by-load endpoints; 57/70 have non-overlapping full seed ranges. Treat PI-DeepONet without the baseline as confounded.
 
----
+Use `fig2_cascade_rollout_advantage` and the matched-comparison table.
 
-## Thứ tự thực thi
+#### 6.3 FNO-COD as the transfer anchor
 
-| # | Việc | Mục | Phụ thuộc | Ước lượng |
-|---|---|---|---|---|
-| 1 | Kiểm tra gas output của monolithic | O-1 | không | 1 giờ |
-| 2 | `daily_mean.py` và đo khoảng cách Jensen | O-8 | không | 2 giờ |
-| 3 | Retrain COD trên physics đã sửa | O-5 | không | 45 phút |
-| 4 | Chẩn đoán bias −3 °C | O-9 | 3 | 1 ngày |
-| 5 | Viết `cod/eval/rollout.py` | O-7 | 3 | 1 ngày |
-| 6 | Đo rollout một năm cho COD | O-7 | 5 | 1 ngày |
-| 7 | Triển khai FNO và MIONet, hai cấu hình mỗi cái | C-11 | không | 3 ngày |
-| 8 | Đóng băng phân phối và ba tầng test, ghi hash | | 7 | nửa ngày |
-| 9 | Chạy toàn bộ ma trận, 3 seed | C-11 | 8 | 1 tuần |
-| 10 | Nguồn tham số động học | O-3 | không | song song |
+Show that FNO-COD and matched monolithic FNO have comparable thermal accuracy, while FNO-COD has lower one-year gas error in all ten endpoints with complete seed-range separation.
 
-Việc 1, 2, 3 chạy được ngay và độc lập nhau.
+Use `fig3_fno_rollout_errors`.
+
+#### 6.4 PI-COD as the accuracy anchor
+
+Among baseline-equipped cascade implementations, PI-COD has the lowest median error in all ten gas-by-load endpoints. Do not generalize this ranking beyond the tested matrix.
+
+Use `fig4_cod_absolute_accuracy`.
+
+#### 6.5 Mechanism: baseline and cycle shape
+
+Across in-cascade backbones, baseline-equipped cells pass the shape gate in 28/28 seeds, compared with 8/28 without the baseline. Relate swing attenuation to the nonlinear downstream Jensen gap without making it a substitute for the one-year endpoint.
+
+Use `fig5_baseline_shape_mechanism` and the Jensen-gap table.
+
+#### 6.6 Negative result: bounded correction
+
+Report convergence first. The single converged checkpoint has much larger thermal error than standard PI-COD, so the bounded formulation is a failed design test under this protocol.
+
+Use `fig6_bounded_correction_failure`.
+
+#### 6.7 CHI trajectories
+
+Show representative CHI, DP, and gas trajectories as derived model outputs. Mark intervals where the sufficient monotonicity conditions hold. Do not rank architectures by CHI accuracy because no CHI reference labels exist.
+
+### 7. Discussion
+
+#### 7.1 What the matrix identifies
+
+- Cascade topology controls the propagation pathway.
+- The analytic thermal baseline controls cyclic thermal shape for backbones prone to smoothing.
+- Absolute accuracy and evidence of backbone transfer are different claims.
+
+#### 7.2 Relation to prior decomposed learning
+
+Position COD by its transformer-specific learned-deterministic interface, deterministic gas and DP rollout, controlled factor separation, and engineering endpoint. Avoid priority language.
+
+#### 7.3 Deployment meaning of CHI
+
+CHI compresses retained state semantics for decision support. Its credibility comes from the definitions of its sub-indices, the stated monotonicity conditions, and transparent trajectories rather than a supervised CHI target.
+
+### 8. Limitations
+
+- Validation uses the frozen simulated distribution and a one-year forcing design.
+- Field DGA supports gas-trend plausibility but does not validate full CHI accuracy.
+- The present conclusions apply to the one-way mineral-oil transformer model and the four tested backbones.
+- The bounded-correction result is one formulation, not a general impossibility result for constrained learning.
+
+### 9. Conclusion
+
+Conclude with the engineering result: replacing neural downstream state updates by a fixed thermal interface and deterministic propagation improves long-horizon reliability across several backbones. Distinguish PI-COD's absolute accuracy from FNO-COD's transfer evidence, and retain CHI as a conditional derived output.
+
+## Main figures and tables
+
+| item | role |
+|---|---|
+| Figure 1 | COD learned-deterministic engineering topology |
+| Figure 2 | One-year cascade advantage across matched backbones |
+| Figure 3 | FNO-COD versus matched monolithic FNO |
+| Figure 4 | Absolute accuracy across baseline-equipped COD backbones |
+| Figure 5 | Analytic baseline and cycle-shape mechanism |
+| Figure 6 | Bounded-correction negative result |
+| Table 1 | Matched comparisons, thermal control, endpoint counts, and reduction factors |
+| Table 2 | Baseline-equipped cascade accuracy and swing summaries |
+
+## Appendix allocation
+
+- Full theorem proofs and assumptions.
+- Network and training details.
+- Complete per-seed convergence and error tables.
+- Full swing-band and Jensen-gap tables.
+- CHI axioms and aggregation derivation.
