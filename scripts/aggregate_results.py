@@ -881,12 +881,12 @@ def build_report(runs: list, results_dir: Path) -> tuple:
       "a gas percentage is a ratio to a physically empty quantity. `theta_TO` "
       "NMAE is legitimate but is secondary and is left to the per-run "
       "`run.json`.")
-    w("3. **S3's swing and Jensen-gap tables are not here.** "
-      "`18_swing_fidelity.py` writes markdown only; it has no `--json-out`, so "
-      "there is no machine-readable per-cell swing ratio to aggregate. The "
-      "C-11 honesty protocol requires those two tables to be read *with* "
-      "thermal MAE, so a matrix report is incomplete until they are "
-      "aggregable.")
+    w("3. **S3's swing and Jensen-gap tables are in a separate report.** Run "
+      "`18_swing_fidelity.py --json-out <run>/swing_fidelity.json` per "
+      "checkpoint and then `scripts/aggregate_swing_results.py` to produce "
+      "`SWING_MATRIX_RESULTS.md`. Keeping the shape mechanism separate from "
+      "the primary rollout table prevents it from being mistaken for a "
+      "substitute endpoint.")
     w("4. **S8, the post-hoc cascade, is not here.** It needs each monolithic "
       "cell's predicted `theta_TO` pushed through the quadrature offline — "
       "`predictions.npz` carries what it needs, but the computation is a "
