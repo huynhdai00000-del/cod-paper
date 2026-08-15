@@ -499,7 +499,8 @@ python audit_port/scripts/24_rollout_thermal_error.py \
     --k-scenarios 0.95 1.10 --json-out <run>/rollout.json \
     --out <run>/rollout.md
 python audit_port/scripts/18_swing_fidelity.py \
-    --checkpoint <run>/model.pt --out <run>/swing_fidelity.md
+    --checkpoint <run>/model.pt --out <run>/swing_fidelity.md \
+    --json-out <run>/swing_fidelity.json
 ```
 
 Then, over the whole Drive directory:
@@ -507,7 +508,8 @@ Then, over the whole Drive directory:
 ```bash
 python scripts/aggregate_results.py \
     --results /path/to/cod_matrix --out audit_port/MATRIX_RESULTS.md
+python scripts/aggregate_swing_results.py \
+    --results /path/to/cod_matrix --out audit_port/SWING_MATRIX_RESULTS.md
 ```
 
 Read its exit code: non-zero means an integrity problem that makes the tables unsafe to quote, and the problems are listed at the end of the report.
-
