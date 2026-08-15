@@ -25,8 +25,8 @@ solution, so the cycle shape is supplied by the IEC baseline and the network's
 spectral bias has nothing to flatten. That predicts the opposite for any
 architecture without such a baseline: the network has to generate the cycle
 itself, which is exactly the frequency content spectral bias suppresses. See N-8,
-N-9 and O-12 — the clean one-variable test needs a converged `CODNoBaseline`,
-which does not exist yet.
+N-9 and O-12 — the current matrix supplies that clean one-variable test through
+multiple converged `CODNoBaseline` seeds.
 
 WHICH DISTRIBUTION. The default evaluation set is `build_realistic_test_set`: the
 frozen fix-7 sampler at a held-out seed, i.e. genuinely in-distribution for a
@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -114,13 +115,15 @@ def pred_hs(model, x0, K_s, Ta_s, device):
 # ═══════════════════════════════════════════════════════════════════════════
 # Models
 # ═══════════════════════════════════════════════════════════════════════════
-def load_cod_checkpoint(path: Path, device):
-    """A COD checkpoint written by `scripts/run.py`, with its own provenance.
+def load_checkpoint(path: Path, device):
+    """Rebuild any matrix checkpoint through the builder that trained it.
 
-    `x_mean_TO` / `x_std_TO` are registered buffers, so `strict=True` restores the
-    normalisation from the file and the constructor values are placeholders. The
-    load is strict on purpose: a checkpoint that needs `strict=False` to fit the
-    current architecture is not a checkpoint of the current architecture.
+    The runbook invokes this script for every matrix cell, not only COD.  The
+    checkpoint carries the complete config and the normalisation arrays, so
+    rebuilding through ``scripts/run.py::build_model`` avoids a second set of
+    constructors drifting away from the training path.  ``strict=True`` then
+    verifies that the rebuilt architecture is exactly the one that wrote the
+    state dict.
     """
     ck = torch.load(path, map_location=device, weights_only=False)
     if "model_state_dict" not in ck:
@@ -128,23 +131,31 @@ def load_cod_checkpoint(path: Path, device):
             f"{path} has no `model_state_dict`. Checkpoints written before "
             "run.py persisted weights do not exist — the model was discarded on "
             "exit — so there is nothing to score and the run has to be repeated.")
-    kind = ck.get("model_kind", "cod")
-    if kind not in ("cod", "cod_no_baseline"):
-        raise ValueError(f"{path} holds a {kind!r} model; this loader handles "
-                         "the COD family. The other C-11 architectures are "
-                         "loaded through run.py's builder.")
-    # Ablation A differs from COD only in `_ode_baseline`, so it loads through
-    # the same constructor with the same state dict.
-    cls = CODNoBaseline if kind == "cod_no_baseline" else CODOperator
-    model = cls(
-        state_dim=STATE_DIM_FAST, n_sensors=N_SENSORS, d_h=128, p=64,
-        n_layers=4, n_exp_feats=12, T=TW, x_mean=np.zeros(6), x_std=np.ones(6),
-        theta_ss_mode=ck.get("theta_ss_mode", "true_fixed_point"),
-    ).to(device)
+    cfg = ck.get("config")
+    if cfg is None:
+        raise ValueError(
+            f"{path} has no `config`; the architecture cannot be rebuilt "
+            "without guessing.")
+
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from run import build_model
+    x_mean = np.asarray(ck.get("x_mean", np.zeros(6)), float)
+    x_std = np.asarray(ck.get("x_std", np.ones(6)), float)
+    model, _predict = build_model(cfg, x_mean, x_std, device)
+    model = model.to(device)
     model.load_state_dict(ck["model_state_dict"], strict=True)
     model.eval()
+    kind = str(cfg.get("model", {}).get("kind", ck.get("model_kind", "?")))
+    if kind == "cod_no_baseline":
+        has_baseline = False
+    elif kind == "cod":
+        has_baseline = True
+    else:
+        has_baseline = bool(cfg.get("model", {}).get("use_baseline", False))
     meta = {
-        "model_kind": ck.get("model_kind", "cod"),
+        "model_kind": kind,
+        "variant": cfg.get("experiment", {}).get("variant", kind),
+        "has_baseline": has_baseline,
         "converged": ck.get("converged"),
         "stop_reason": ck.get("stop_reason"),
         "distribution_hash": ck.get("distribution_hash"),
@@ -279,9 +290,11 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=OUT,
                     help="Where to write the report. Defaults to a FIXED path, "
                          "which is correct for a one-off but silently destroys "
-                         "results when this is looped: 15 cells x 7 seeds would "
-                         "overwrite one file 105 times and keep the last. Pass a "
+                         "results when this is looped over a matrix sweep. Pass a "
                          "per-run path in a sweep.")
+    ap.add_argument("--json-out", type=Path, default=None,
+                    help="Write machine-readable per-model swing, tracking-band "
+                         "and Jensen-gap summaries for aggregation.")
     args = ap.parse_args()
     out_path = args.out
 
@@ -315,20 +328,19 @@ def main() -> int:
                        load_exact(args.smooth_test), {}))
     if args.checkpoint:
         for i, ckpt in enumerate(args.checkpoint):
-            m, meta = load_cod_checkpoint(ckpt, device)
+            m, meta = load_checkpoint(ckpt, device)
             if meta.get("converged") is False:
                 print(f"[warn] {ckpt.name} did NOT converge "
                       f"(stop_reason={meta.get('stop_reason')!r}). Per the repo "
                       "rule its swing numbers describe a non-converged model.")
-            kind = (meta.get("model_kind") or "cod")
-            # Whether the analytic baseline H is present is the one variable
-            # O-12 changes, so it is read from the checkpoint rather than typed
-            # into a label that could disagree with the weights.
-            has_H = "no" if kind == "cod_no_baseline" else "yes"
+            kind = (meta.get("model_kind") or "?")
+            # Whether the analytic baseline H is present is read from the
+            # checkpoint config rather than inferred from a display label.
+            has_H = "yes" if meta.get("has_baseline") else "no"
             if args.labels and i < len(args.labels):
                 label = args.labels[i]
             else:
-                label = f"{kind} (seed {meta.get('seed')})"
+                label = f"{meta.get('variant', kind)} (seed {meta.get('seed')})"
             models.append((label, has_H, f"`{ckpt.parent.name}/{ckpt.name}`",
                            m, meta))
     if args.v57_checkpoints:
@@ -537,25 +549,98 @@ def main() -> int:
           "model tracks.\n")
 
     A("## 6. What this does not establish\n")
-    A("1. **Ablation A is still the test this approximates.** Ablation A is "
-      "COD's architecture with the analytic baseline replaced by the constant "
-      "`x0` — same network, same pipeline, one variable. Its weights are not "
-      "among the supplied artifacts (`cod/models/cod.py`, `CODNoBaseline`). The "
-      "monolithic pair removes the analytic baseline **and** the cascaded gas "
-      "integral and was trained to a far worse optimum, so it is a two-variable "
-      "substitute. DECISIONS O-12 is the one training run that would settle it.\n")
-    A("2. **Every monolithic checkpoint carries the J-8 defect** — its thermal "
-      "exponent was shadowed to 12 instead of 0.8 during training — and none of "
-      "them converged (N-9). Their swing ratios are reported for continuity with "
-      "the earlier version of this document, not as evidence about "
-      "architecture.\n")
-    A("3. **The v57 and fix-7 rows are not comparable.** They are different "
-      "models scored on different distributions; only rows sharing an evaluation "
-      "set can be read against each other.\n")
+    A("1. **A gate result is not a causal attribution by itself.** The analytic-"
+      "baseline mechanism is identified only by comparing the matched baseline "
+      "and no-baseline cells over seeds. A single checkpoint can show flattening "
+      "or preservation, but cannot say which design factor caused it.\n")
+    A("2. **This is a 12 h trajectory-shape test, not the long-horizon primary "
+      "endpoint.** It explains how a surrogate preserves or loses the Jensen gap; "
+      "end-of-rollout gas error remains the primary engineering metric in "
+      "ANALYSIS_PLAN Amendment 1.\n")
+    A("3. **Only tracked bands are evidence about spectral bias.** A band with "
+      f"median thermal MAE above {TRACKING_MAE:.0f} degC is excluded from the gate. "
+      "Calling a badly tracked trajectory 'flattened' would confuse general model "
+      "error with loss of cyclic amplitude.\n")
+    if args.v57_checkpoints:
+        A("4. **The v57 and fix-7 rows are not comparable.** They are different "
+          "models scored on different distributions; only rows sharing an "
+          "evaluation set can be read against each other.\n")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"Wrote {out_path}")
+    if args.json_out is not None:
+        payload = {
+            "evaluation": {
+                "tier": args.tier,
+                "seed": args.seed,
+                "n_cases": len(cases),
+                "distribution_hash": ("fc4cb76c3b32ec17"
+                                      if args.tier == "realistic" else None),
+            },
+            "models": [],
+        }
+        for name, has_H, ckpt_name, _, meta in models:
+            r = res[name]
+            live = live_mask(r)
+            ratios = r["sw_p"][live] / r["sw_t"][live]
+            bands = []
+            failed_bands = []
+            for lo, hi in BANDS:
+                mask = live & (r["sw_t"] >= lo) & (r["sw_t"] < hi)
+                if mask.sum() == 0:
+                    continue
+                band_mae = float(np.median(r["mae"][mask]))
+                band_ratio = float(np.median(
+                    r["sw_p"][mask] / r["sw_t"][mask]))
+                tracked = bool(mask.sum() >= 3 and band_mae <= TRACKING_MAE)
+                failed = bool(tracked and band_ratio < RATIO_FLOOR)
+                if failed:
+                    failed_bands.append(f"{lo}-{hi}")
+                bands.append({
+                    "lo_degC": lo,
+                    "hi_degC": hi,
+                    "n": int(mask.sum()),
+                    "median_ratio": band_ratio,
+                    "median_mae_degC": band_mae,
+                    "tracked": tracked,
+                    "failed": failed,
+                })
+            gap = {}
+            for i, state in enumerate(STATES):
+                truth = r["g_t"][live, i]
+                pred = r["g_p"][live, i]
+                gap[state] = {
+                    "median_true": float(np.median(truth)),
+                    "median_predicted": float(np.median(pred)),
+                    "median_ratio": float(np.median(pred / truth)),
+                    "delta_ratio_of_medians": float(
+                        np.median(pred) / np.median(truth) - 1.0),
+                }
+            tracked_count = sum(1 for b in bands if b["tracked"])
+            gate = ("fail" if failed_bands else
+                    "not_evaluated" if tracked_count == 0 else "pass")
+            payload["models"].append({
+                "name": name,
+                "analytic_baseline": has_H == "yes",
+                "checkpoint": ckpt_name.strip("`"),
+                "meta": meta,
+                "n_live": int(live.sum()),
+                "median_swing_ratio": float(np.median(ratios)),
+                "underpredict_fraction": float((ratios < 1.0).mean()),
+                "median_thermal_mae_degC": float(np.median(r["mae"][live])),
+                "p90_thermal_mae_degC": float(
+                    np.percentile(r["mae"][live], 90)),
+                "median_thermal_bias_degC": float(np.median(r["bias"][live])),
+                "bands": bands,
+                "jensen_gap": gap,
+                "gate": gate,
+                "failed_bands": failed_bands,
+            })
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(payload, indent=2) + "\n",
+                                 encoding="utf-8")
+        print(f"Wrote {args.json_out}")
     if failures:
         print("\nFAIL: " + "; ".join(failures))
         return 1
